@@ -48,18 +48,18 @@ type node struct {
 // podag is memory efficient.
 type podag struct {
 	lastidx uint32             // last generated dense index
-	nodes   map[*Values]uint32 // map SSA values to dense indices
-	c       []node             // given node i, c[i*2] and c[i*2+1] are the two children
+	values  map[*Values]uint32 // map SSA values to dense indices
+	nodes   []node             // given node i, c[i*2] and c[i*2+1] are the two children
 	roots   []uint32           // list of root nodes (forest)
 	undo    []undoPass
 }
 
 func newPodag() *podag {
 	return &podag{
-		nodes: make(map[*Values]uint32),
-		c:     make([]node, 1, 1024),
-		roots: make([]uint32, 0, 64),
-		undo:  make([]undoPass, 0, 256),
+		values: make(map[*Values]uint32),
+		nodes:  make([]node, 1, 1024),
+		roots:  make([]uint32, 0, 64),
+		undo:   make([]undoPass, 0, 256),
 	}
 }
 
@@ -68,11 +68,11 @@ func (po *podag) upush(p undoPass) {
 }
 
 // set children
-func (po *podag) setchl(i uint32, l uint32)          { po.c[i].l = l }
-func (po *podag) setchr(i uint32, r uint32)          { po.c[i].r = r }
-func (po *podag) chl(i uint32) uint32                { return po.c[i].l }
-func (po *podag) chr(i uint32) uint32                { return po.c[i].r }
-func (po *podag) children(i uint32) (uint32, uint32) { return po.c[i].l, po.c[i].r }
+func (po *podag) setchl(i uint32, l uint32)          { po.nodes[i].l = l }
+func (po *podag) setchr(i uint32, r uint32)          { po.nodes[i].r = r }
+func (po *podag) chl(i uint32) uint32                { return po.nodes[i].l }
+func (po *podag) chr(i uint32) uint32                { return po.nodes[i].r }
+func (po *podag) children(i uint32) (uint32, uint32) { return po.nodes[i].l, po.nodes[i].r }
 
 // addchild adds i2 as direct child of i1
 func (po *podag) addchild(i1, i2 uint32) {
@@ -109,9 +109,9 @@ func (po *podag) newnode(n *Values) uint32 {
 	i := po.lastidx + 1
 	po.lastidx++
 	if n != nil {
-		po.nodes[n] = i
+		po.values[n] = i
 	}
-	po.c = append(po.c, node{0, 0})
+	po.nodes = append(po.nodes, node{0, 0})
 	return i
 }
 
@@ -218,7 +218,7 @@ func (po *podag) checkIntegrity() (err error) {
 	}
 
 	// Verify that only existing nodes have non-zero children
-	for i, n := range po.c {
+	for i, n := range po.nodes {
 		if n.l|n.r != 0 && !seen.Test(uint32(i)) {
 			err = fmt.Errorf("children of unknown node %d->%v", i/2, n)
 			return
@@ -237,8 +237,8 @@ func (po *podag) Ordered(n1, n2 *Values) bool {
 		panic("should not call Ordered with n1==n2")
 	}
 
-	i1, f1 := po.nodes[n1]
-	i2, f2 := po.nodes[n2]
+	i1, f1 := po.values[n1]
+	i2, f2 := po.values[n2]
 	if !f1 || !f2 {
 		return false
 	}
@@ -248,8 +248,8 @@ func (po *podag) Ordered(n1, n2 *Values) bool {
 
 // Add records that n1<n2. Returns false if this is a contradiction
 func (po *podag) Add(n1, n2 *Values) bool {
-	i1, f1 := po.nodes[n1]
-	i2, f2 := po.nodes[n2]
+	i1, f1 := po.values[n1]
+	i2, f2 := po.values[n2]
 
 	switch {
 	case !f1 && !f2:
