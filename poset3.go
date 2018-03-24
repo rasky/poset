@@ -29,60 +29,61 @@ const (
 	flagNewNode
 )
 
-type undoPass struct {
+type posetUndo struct {
 	typ    string
 	idx    uint32
 	parent uint32
 	flags  uint8
 }
 
-var undoCheckpoint = undoPass{"", 0, 0, 0}
+var posetUndoCheckpoint = posetUndo{}
 
-type node struct {
+type posetNode struct {
 	l, r uint32
 }
 
-// podag is a union-find datastructure that can represent a partial order.
+// poset is a union-find datastructure that can represent a partial order.
 // It is implemented as a forest of DAGs, where each DAG is made by nodes
 // that can have max 2 children.
-// podag is memory efficient.
-type podag struct {
+// poset is memory efficient.
+type poset struct {
 	lastidx uint32             // last generated dense index
 	values  map[*Values]uint32 // map SSA values to dense indices
-	nodes   []node             // given node i, c[i*2] and c[i*2+1] are the two children
+	nodes   []posetNode        // given node i, c[i*2] and c[i*2+1] are the two children
 	roots   []uint32           // list of root nodes (forest)
-	undo    []undoPass
+	undo    []posetUndo
 }
 
-func newPodag() *podag {
-	return &podag{
+func newPoset() *poset {
+	return &poset{
 		values: make(map[*Values]uint32),
-		nodes:  make([]node, 1, 1024),
+		nodes:  make([]posetNode, 1, 1024),
 		roots:  make([]uint32, 0, 64),
-		undo:   make([]undoPass, 0, 256),
+		undo:   make([]posetUndo, 0, 256),
 	}
 }
 
-func (po *podag) upush(p undoPass) {
-	po.undo = append(po.undo, p)
+// Handle children
+func (po *poset) setchl(i uint32, l uint32)          { po.nodes[i].l = l }
+func (po *poset) setchr(i uint32, r uint32)          { po.nodes[i].r = r }
+func (po *poset) chl(i uint32) uint32                { return po.nodes[i].l }
+func (po *poset) chr(i uint32) uint32                { return po.nodes[i].r }
+func (po *poset) children(i uint32) (uint32, uint32) { return po.nodes[i].l, po.nodes[i].r }
+
+// upush records a new undo step
+func (po *poset) upush(s string, i, p uint32, flags uint8) {
+	po.undo = append(po.undo, posetUndo{s, i, p, flags})
 }
 
-// set children
-func (po *podag) setchl(i uint32, l uint32)          { po.nodes[i].l = l }
-func (po *podag) setchr(i uint32, r uint32)          { po.nodes[i].r = r }
-func (po *podag) chl(i uint32) uint32                { return po.nodes[i].l }
-func (po *podag) chr(i uint32) uint32                { return po.nodes[i].r }
-func (po *podag) children(i uint32) (uint32, uint32) { return po.nodes[i].l, po.nodes[i].r }
-
 // addchild adds i2 as direct child of i1
-func (po *podag) addchild(i1, i2 uint32) {
+func (po *poset) addchild(i1, i2 uint32) {
 	i1l, i1r := po.children(i1)
 	if i1l == 0 {
 		po.setchl(i1, i2)
-		po.upush(undoPass{"addchild_left", i2, i1, 0})
+		po.upush("addchild_left", i2, i1, 0)
 	} else if i1r == 0 {
 		po.setchr(i1, i2)
-		po.upush(undoPass{"addchild_right", i2, i1, 0})
+		po.upush("addchild_right", i2, i1, 0)
 	} else {
 		// If n1 already has two children, add an intermediate dummy
 		// node to record the relation correctly (without relating
@@ -98,24 +99,24 @@ func (po *podag) addchild(i1, i2 uint32) {
 		po.setchl(dummy, i1r)
 		po.setchr(dummy, i2)
 		po.setchr(i1, dummy)
-		po.upush(undoPass{"addchild_1", dummy, i1, flagDummy})
-		po.upush(undoPass{"addchild_2", i2, dummy, 0})
+		po.upush("addchild_1", dummy, i1, flagDummy)
+		po.upush("addchild_2", i2, dummy, 0)
 	}
 }
 
 // newnode allocates a new node bound to SSA value n.
 // If n is nil, this is a dummy node (= only used internally).
-func (po *podag) newnode(n *Values) uint32 {
+func (po *poset) newnode(n *Values) uint32 {
 	i := po.lastidx + 1
 	po.lastidx++
 	if n != nil {
 		po.values[n] = i
 	}
-	po.nodes = append(po.nodes, node{0, 0})
+	po.nodes = append(po.nodes, posetNode{})
 	return i
 }
 
-func (po *podag) isroot(r uint32) bool {
+func (po *poset) isroot(r uint32) bool {
 	for i := range po.roots {
 		if po.roots[i] == r {
 			return true
@@ -124,7 +125,7 @@ func (po *podag) isroot(r uint32) bool {
 	return false
 }
 
-func (po *podag) changeroot(oldr, newr uint32) {
+func (po *poset) changeroot(oldr, newr uint32) {
 	for i := range po.roots {
 		if po.roots[i] == oldr {
 			po.roots[i] = newr
@@ -134,7 +135,7 @@ func (po *podag) changeroot(oldr, newr uint32) {
 	panic("changeroot on non-root")
 }
 
-func (po *podag) removeroot(r uint32) {
+func (po *poset) removeroot(r uint32) {
 	for i := range po.roots {
 		if po.roots[i] == r {
 			po.roots = append(po.roots[:i], po.roots[i+1:]...)
@@ -148,7 +149,7 @@ func (po *podag) removeroot(r uint32) {
 // f is the visit function called for each node; if it returns true,
 // the search is aborted and true is returned.
 // If the visit ends, false is returned.
-func (po *podag) dfs(r uint32, f func(i uint32) bool) bool {
+func (po *poset) dfs(r uint32, f func(i uint32) bool) bool {
 	closed := newBitset(int(po.lastidx + 1))
 	open := make([]uint32, 1, po.lastidx+1)
 	open[0] = r
@@ -175,7 +176,7 @@ func (po *podag) dfs(r uint32, f func(i uint32) bool) bool {
 }
 
 // Returns true if i1 dominates i2 (that is, i1<i2 maybe transitively)
-func (po *podag) dominates(i1, i2 uint32) bool {
+func (po *poset) dominates(i1, i2 uint32) bool {
 	return po.dfs(i1, func(n uint32) bool {
 		return n == i2
 	})
@@ -184,7 +185,7 @@ func (po *podag) dominates(i1, i2 uint32) bool {
 // findroot finds i's root, that is which DAG contains i.
 // Returns the root; if i is itself a root, it is returned.
 // Panic if i is not in any DAG.
-func (po *podag) findroot(i uint32) uint32 {
+func (po *poset) findroot(i uint32) uint32 {
 	for _, r := range po.roots {
 		if po.dominates(r, i) {
 			return r
@@ -193,9 +194,9 @@ func (po *podag) findroot(i uint32) uint32 {
 	panic("findroot didn't find any root")
 }
 
-// checkIntegrity verifies internal integrity of a podag
+// checkIntegrity verifies internal integrity of a poset
 // (for debugging purposes)
-func (po *podag) checkIntegrity() (err error) {
+func (po *poset) checkIntegrity() (err error) {
 	// Verify that each node appears in a single DAG
 	seen := newBitset(int(po.lastidx + 1))
 	for _, r := range po.roots {
@@ -232,7 +233,7 @@ func (po *podag) checkIntegrity() (err error) {
 // the same object, to ease debugging, as this is trivially false
 // and should always be checked before calling Ordered when the caller
 // knows that it is a possibility.
-func (po *podag) Ordered(n1, n2 *Values) bool {
+func (po *poset) Ordered(n1, n2 *Values) bool {
 	if n1 == n2 {
 		panic("should not call Ordered with n1==n2")
 	}
@@ -247,20 +248,20 @@ func (po *podag) Ordered(n1, n2 *Values) bool {
 }
 
 // Add records that n1<n2. Returns false if this is a contradiction
-func (po *podag) Add(n1, n2 *Values) bool {
+func (po *poset) Add(n1, n2 *Values) bool {
 	i1, f1 := po.values[n1]
 	i2, f2 := po.values[n2]
 
 	switch {
 	case !f1 && !f2:
-		// Neither n1 nor n2 are in the podag, so they are not related
+		// Neither n1 nor n2 are in the poset, so they are not related
 		// in any way to existing nodes.
 		// Create a new DAG to record the relation.
 		i1, i2 = po.newnode(n1), po.newnode(n2)
 		po.roots = append(po.roots, i1)
 		po.setchl(i1, i2)
-		po.upush(undoPass{"addnew_1", i1, 0, 0})
-		po.upush(undoPass{"addnew_2", i2, i1, 0})
+		po.upush("addnew_1", i1, 0, 0)
+		po.upush("addnew_2", i2, i1, 0)
 
 	case f1 && !f2:
 		// n1 is in one of the DAGs, while n2 is not. Add n2 as children
@@ -277,7 +278,7 @@ func (po *podag) Add(n1, n2 *Values) bool {
 		if po.isroot(i2) {
 			po.setchl(i1, i2)
 			po.changeroot(i2, i1)
-			po.upush(undoPass{"addasroot", i1, 0, flagDummy})
+			po.upush("addasroot", i1, 0, flagDummy)
 			return true
 		}
 
@@ -298,11 +299,11 @@ func (po *podag) Add(n1, n2 *Values) bool {
 		po.setchr(dummy, i1)
 		po.setchl(i1, i2)
 		po.changeroot(r, dummy)
-		po.upush(undoPass{"addleftdummy_1", dummy, 0, flagDummy})
-		po.upush(undoPass{"addleftdummy_2", i1, dummy, flagNewNode})
+		po.upush("addleftdummy_1", dummy, 0, flagDummy)
+		po.upush("addleftdummy_2", i1, dummy, flagNewNode)
 
 	case f1 && f2:
-		// Both n1 and n2 are in the podag. First, check if they're already related
+		// Both n1 and n2 are in the poset. First, check if they're already related
 		if po.dominates(i1, i2) {
 			return true
 		}
@@ -320,7 +321,7 @@ func (po *podag) Add(n1, n2 *Values) bool {
 			po.setchr(r, r2)
 			po.changeroot(r1, r)
 			po.removeroot(r2)
-			po.upush(undoPass{"addboth", r, 0, flagDummy})
+			po.upush("addboth", r, 0, flagDummy)
 		}
 
 		// Connect n1 and n2
@@ -330,11 +331,11 @@ func (po *podag) Add(n1, n2 *Values) bool {
 	return true
 }
 
-func (po *podag) Checkpoint() {
-	po.upush(undoCheckpoint)
+func (po *poset) Checkpoint() {
+	po.undo = append(po.undo, posetUndoCheckpoint)
 }
 
-func (po *podag) Undo() {
+func (po *poset) Undo() {
 	if len(po.undo) == 0 {
 		panic("empty undo stack")
 	}
@@ -342,7 +343,7 @@ func (po *podag) Undo() {
 	for len(po.undo) > 0 {
 		pass := po.undo[len(po.undo)-1]
 		po.undo = po.undo[:len(po.undo)-1]
-		if pass == undoCheckpoint {
+		if pass == posetUndoCheckpoint {
 			break
 		}
 
@@ -373,7 +374,6 @@ func (po *podag) Undo() {
 					child = r
 				}
 			}
-			fmt.Printf("undo %s %d->%d->[%d,%d] delete:%d\n", pass.typ, p, i, l, r, child)
 			if po.chl(p) == i {
 				po.setchl(p, child)
 			} else {
@@ -388,7 +388,6 @@ func (po *podag) Undo() {
 			}
 		} else {
 			// Undo adding a new root
-			fmt.Printf("undoroot %s %d->%d->[%d,%d]\n", pass.typ, p, i, l, r)
 			if l != 0 && r != 0 {
 				// Split DAGs in two
 				po.changeroot(i, l)

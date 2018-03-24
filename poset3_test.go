@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestBasic(t *testing.T) {
+func TestPoset(t *testing.T) {
 	const (
 		add = iota
 		addfail
@@ -140,7 +140,7 @@ func TestBasic(t *testing.T) {
 		{ordered, 100, 101},
 	}
 
-	po := newPodag()
+	po := newPoset()
 	for idx, op := range ops {
 		switch op.typ {
 		case add:
