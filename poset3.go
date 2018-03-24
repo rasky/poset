@@ -1,13 +1,9 @@
-package poset
+package ssa
 
 import (
 	"errors"
 	"fmt"
 )
-
-type Values struct {
-	ID int64
-}
 
 const uintSize = 32 << (^uint(0) >> 32 & 1) // 32 or 64
 type bitset []uint
@@ -47,16 +43,16 @@ type posetNode struct {
 // that can have max 2 children.
 // poset is memory efficient.
 type poset struct {
-	lastidx uint32             // last generated dense index
-	values  map[*Values]uint32 // map SSA values to dense indices
-	nodes   []posetNode        // given node i, c[i*2] and c[i*2+1] are the two children
-	roots   []uint32           // list of root nodes (forest)
+	lastidx uint32        // last generated dense index
+	values  map[ID]uint32 // map SSA values to dense indices
+	nodes   []posetNode   // given node i, c[i*2] and c[i*2+1] are the two children
+	roots   []uint32      // list of root nodes (forest)
 	undo    []posetUndo
 }
 
 func newPoset() *poset {
 	return &poset{
-		values: make(map[*Values]uint32),
+		values: make(map[ID]uint32),
 		nodes:  make([]posetNode, 1, 1024),
 		roots:  make([]uint32, 0, 64),
 		undo:   make([]posetUndo, 0, 256),
@@ -106,11 +102,11 @@ func (po *poset) addchild(i1, i2 uint32) {
 
 // newnode allocates a new node bound to SSA value n.
 // If n is nil, this is a dummy node (= only used internally).
-func (po *poset) newnode(n *Values) uint32 {
+func (po *poset) newnode(n *Value) uint32 {
 	i := po.lastidx + 1
 	po.lastidx++
 	if n != nil {
-		po.values[n] = i
+		po.values[n.ID] = i
 	}
 	po.nodes = append(po.nodes, posetNode{})
 	return i
@@ -233,13 +229,13 @@ func (po *poset) checkIntegrity() (err error) {
 // the same object, to ease debugging, as this is trivially false
 // and should always be checked before calling Ordered when the caller
 // knows that it is a possibility.
-func (po *poset) Ordered(n1, n2 *Values) bool {
+func (po *poset) Ordered(n1, n2 *Value) bool {
 	if n1 == n2 {
 		panic("should not call Ordered with n1==n2")
 	}
 
-	i1, f1 := po.values[n1]
-	i2, f2 := po.values[n2]
+	i1, f1 := po.values[n1.ID]
+	i2, f2 := po.values[n2.ID]
 	if !f1 || !f2 {
 		return false
 	}
@@ -248,9 +244,9 @@ func (po *poset) Ordered(n1, n2 *Values) bool {
 }
 
 // Add records that n1<n2. Returns false if this is a contradiction
-func (po *poset) Add(n1, n2 *Values) bool {
-	i1, f1 := po.values[n1]
-	i2, f2 := po.values[n2]
+func (po *poset) Add(n1, n2 *Value) bool {
+	i1, f1 := po.values[n1.ID]
+	i2, f2 := po.values[n2.ID]
 
 	switch {
 	case !f1 && !f2:

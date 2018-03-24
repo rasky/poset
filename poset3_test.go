@@ -1,4 +1,4 @@
-package poset
+package ssa
 
 import (
 	"testing"
@@ -14,9 +14,10 @@ func TestPoset(t *testing.T) {
 		undo
 	)
 
-	var v [1024]*Values
+	var v [1024]*Value
 	for i := range v {
-		v[i] = new(Values)
+		v[i] = new(Value)
+		v[i].ID = ID(i)
 	}
 
 	var ops = []struct {
