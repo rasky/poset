@@ -313,9 +313,9 @@ func (po *poset) setnoneq(id1, id2 ID) {
 	po.upushneq("nonequal", id1, id2)
 }
 
-// checkIntegrity verifies internal integrity of a poset
-// (for debugging purposes)
-func (po *poset) checkIntegrity() (err error) {
+// CheckIntegrity verifies internal integrity of a poset. It is intended
+// for debugging purposes.
+func (po *poset) CheckIntegrity() (err error) {
 	// Verify that each node appears in a single DAG
 	seen := newBitset(int(po.lastidx + 1))
 	for _, r := range po.roots {
@@ -356,8 +356,35 @@ func (po *poset) checkIntegrity() (err error) {
 	return
 }
 
-// dotdump dumps the poset in graphviz format for debugging
-func (po *poset) dotdump(fn string, title string) error {
+// CheckEmpty checks that a poset is completely empty.
+// It can be used for debugging purposes, as a poset is supposed to
+// be empty after it's fully rolled back through Undo.
+func (po *poset) CheckEmpty() error {
+	// Check that the poset is completely empty
+	if len(po.values) != 0 {
+		return fmt.Errorf("end of test: non-empty value map: %v", po.values)
+	}
+	if len(po.roots) != 0 {
+		return fmt.Errorf("end of test: non-empty root list: %v", po.roots)
+	}
+	for _, bs := range po.noneq {
+		for _, x := range bs {
+			if x != 0 {
+				return fmt.Errorf("end of test: non-empty noneq map")
+			}
+		}
+	}
+	for idx, n := range po.nodes {
+		if n.l|n.r != 0 {
+			return fmt.Errorf("end of test: non-empty node %v->[%d,%d]", idx, n.l, n.r)
+		}
+	}
+	return nil
+}
+
+// DotDump dumps the poset in graphviz format to file fn, with the specified
+// title.
+func (po *poset) DotDump(fn string, title string) error {
 	f, err := os.Create(fn)
 	if err != nil {
 		return err

@@ -291,32 +291,16 @@ func TestPoset(t *testing.T) {
 			panic("unimplemented")
 		}
 
-		po.dotdump(fmt.Sprintf("op%d.dot", idx), fmt.Sprintf("Last op: %v", op))
+		po.DotDump(fmt.Sprintf("op%d.dot", idx), fmt.Sprintf("Last op: %v", op))
 
-		if err := po.checkIntegrity(); err != nil {
+		if err := po.CheckIntegrity(); err != nil {
 			t.Error("Undo stack", po.undo)
 			t.Fatalf("op%d%v: integrity error: %v", idx, op, err)
 		}
 	}
 
 	// Check that the poset is completely empty
-	if len(po.values) != 0 {
-		t.Errorf("end of test: non-empty value map: %v", po.values)
-	}
-	if len(po.roots) != 0 {
-		t.Errorf("end of test: non-empty root list: %v", po.roots)
-	}
-	for _, bs := range po.noneq {
-		for _, x := range bs {
-			if x != 0 {
-				t.Errorf("end of test: non-empty noneq map")
-				break
-			}
-		}
-	}
-	for idx, n := range po.nodes {
-		if n.l|n.r != 0 {
-			t.Errorf("end of test: non-empty node %v->[%d,%d]", idx, n.l, n.r)
-		}
+	if err := po.CheckEmpty(); err != nil {
+		t.Error(err)
 	}
 }
