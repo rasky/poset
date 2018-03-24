@@ -7,16 +7,20 @@ import (
 
 func TestPoset(t *testing.T) {
 	const (
-		SetOrder      = "SetOrder"
-		SetOrder_Fail = "SetOrder_Fail"
-		Ordered       = "Ordered"
-		Ordered_Fail  = "Ordered_Fail"
-		SetEqual      = "SetEqual"
-		SetEqual_Fail = "SetEqual_Fail"
-		Equal         = "Equal"
-		Equal_Fail    = "Equal_Fail"
-		Checkpoint    = "Checkpoint"
-		Undo          = "Undo"
+		SetOrder         = "SetOrder"
+		SetOrder_Fail    = "SetOrder_Fail"
+		Ordered          = "Ordered"
+		Ordered_Fail     = "Ordered_Fail"
+		SetEqual         = "SetEqual"
+		SetEqual_Fail    = "SetEqual_Fail"
+		Equal            = "Equal"
+		Equal_Fail       = "Equal_Fail"
+		SetNonEqual      = "SetNonEqual"
+		SetNonEqual_Fail = "SetNonEqual_Fail"
+		NonEqual         = "NonEqual"
+		NonEqual_Fail    = "NonEqual_Fail"
+		Checkpoint       = "Checkpoint"
+		Undo             = "Undo"
 	)
 
 	var v [1024]*Value
@@ -38,6 +42,8 @@ func TestPoset(t *testing.T) {
 		{Ordered_Fail, 101, 100},
 		{SetOrder_Fail, 101, 100},
 		{SetOrder, 100, 101}, // repeat
+		{NonEqual, 100, 101},
+		{NonEqual, 101, 100},
 
 		// Dag #1: 4<7<12
 		{Checkpoint, 0, 0},
@@ -47,6 +53,9 @@ func TestPoset(t *testing.T) {
 		{Ordered, 7, 12},
 		{Ordered, 4, 12},
 		{Ordered_Fail, 12, 4},
+		{NonEqual, 4, 12},
+		{NonEqual, 12, 4},
+		{NonEqual_Fail, 4, 100},
 
 		// Dag #1: 1<4<7<12
 		{Checkpoint, 0, 0},
@@ -164,7 +173,8 @@ func TestPoset(t *testing.T) {
 		{Checkpoint, 0, 0},
 		{SetEqual, 2, 102},
 		{Equal, 2, 102},
-		{SetEqual, 2, 102}, // trivially pass
+		{SetEqual, 2, 102},         // trivially pass
+		{SetNonEqual_Fail, 2, 102}, // trivially fail
 		{Ordered, 1, 107},
 		{Ordered, 101, 6},
 		{Ordered, 101, 105},
@@ -204,6 +214,16 @@ func TestPoset(t *testing.T) {
 		{SetEqual, 500, 501},
 		{Ordered_Fail, 500, 501},
 		{Ordered_Fail, 102, 501},
+
+		// SetNonEqual relations
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetNonEqual, 600, 601},
+		{NonEqual, 600, 601},
+		{SetNonEqual, 601, 602},
+		{NonEqual, 601, 602},
+		{NonEqual_Fail, 600, 602}, // non-transitive
+		{SetEqual_Fail, 601, 602},
 
 		// Undo back to beginning, leave the poset empty
 		{Undo, 0, 0},
@@ -251,6 +271,22 @@ func TestPoset(t *testing.T) {
 			if po.Equal(v[op.a], v[op.b]) {
 				t.Errorf("op%d%v passed", idx, op)
 			}
+		case SetNonEqual:
+			if !po.SetNonEqual(v[op.a], v[op.b]) {
+				t.Errorf("op%d%v failed", idx, op)
+			}
+		case SetNonEqual_Fail:
+			if po.SetNonEqual(v[op.a], v[op.b]) {
+				t.Errorf("op%d%v passed", idx, op)
+			}
+		case NonEqual:
+			if !po.NonEqual(v[op.a], v[op.b]) {
+				t.Errorf("op%d%v failed", idx, op)
+			}
+		case NonEqual_Fail:
+			if po.NonEqual(v[op.a], v[op.b]) {
+				t.Errorf("op%d%v passed", idx, op)
+			}
 		default:
 			panic("unimplemented")
 		}
@@ -269,6 +305,14 @@ func TestPoset(t *testing.T) {
 	}
 	if len(po.roots) != 0 {
 		t.Errorf("end of test: non-empty root list: %v", po.roots)
+	}
+	for _, bs := range po.noneq {
+		for _, x := range bs {
+			if x != 0 {
+				t.Errorf("end of test: non-empty noneq map")
+				break
+			}
+		}
 	}
 	for idx, n := range po.nodes {
 		if n.l|n.r != 0 {
