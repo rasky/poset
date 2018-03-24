@@ -39,8 +39,9 @@ type posetUndo struct {
 	ids    []ID
 }
 
+// posetNode is a node of a DAG within the poset.
 type posetNode struct {
-	l, r uint32 // left/right child
+	l, r uint32
 }
 
 // poset is a union-find data structure that can represent a partially ordered set
@@ -71,7 +72,18 @@ type posetNode struct {
 //
 // poset is designed to be memory efficient and do little allocations during normal usage.
 // Most internal data structures are pre-allocated and flat, so for instance adding a
-// new relation does not cause any allocation.
+// new relation does not cause any allocation. For performance reasons,
+// each node has only up to two outgoing edges (like a binary tree), so intermediate
+// "dummy" nodes are required to represent more than two relations. For instance,
+// to record that A<I, A<J, A<K (with no known relation between I,J,K), we create the
+// following DAG:
+//
+//         A
+//        / \
+//       I  dummy
+//           /  \
+//          J    K
+//
 type poset struct {
 	lastidx uint32        // last generated dense index
 	values  map[ID]uint32 // map SSA values to dense indices
@@ -123,7 +135,9 @@ func (po *poset) addchild(i1, i2 uint32) {
 	} else {
 		// If n1 already has two children, add an intermediate dummy
 		// node to record the relation correctly (without relating
-		// n2 to other existing nodes).
+		// n2 to other existing nodes). Use a non-deterministic value
+		// to decide whether to append on the left or the right, to avoid
+		// creating degenerated chains.
 		//
 		//      n1
 		//     /  \
@@ -132,9 +146,15 @@ func (po *poset) addchild(i1, i2 uint32) {
 		//      i1r   n2
 		//
 		dummy := po.newnode(nil)
-		po.setchl(dummy, i1r)
-		po.setchr(dummy, i2)
-		po.setchr(i1, dummy)
+		if (i1^i2^i1l^i1r)&1 != 0 { // non-deterministic
+			po.setchl(dummy, i1r)
+			po.setchr(dummy, i2)
+			po.setchr(i1, dummy)
+		} else {
+			po.setchl(dummy, i1l)
+			po.setchr(dummy, i2)
+			po.setchl(i1, dummy)
+		}
 		po.upush("addchild_1", dummy, i1, flagDummy)
 		po.upush("addchild_2", i2, dummy, 0)
 	}
