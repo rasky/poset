@@ -69,7 +69,6 @@ type posetNode struct {
 // DAG node; when a new equality relation is recorded between two existing nodes,
 // the nodes are merged, adjusting incoming and outgoing edges.
 //
-//
 // poset is designed to be memory efficient and do little allocations during normal usage.
 // Most internal data structures are pre-allocated and flat, so for instance adding a
 // new relation does not cause any allocation.
@@ -403,6 +402,7 @@ func (po *poset) dotdump(fn string, title string) error {
 // Ordered returns true if n1<n2. It returns false either when it is
 // certain that n1<n2 is false, or if there is not enough information
 // to tell.
+// Complexity is O(n).
 func (po *poset) Ordered(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Ordered with n1==n2")
@@ -420,6 +420,7 @@ func (po *poset) Ordered(n1, n2 *Value) bool {
 // Equal returns true if n1==n2. It returns false either when it is
 // certain that n1==n2 is false, or if there is not enough information
 // to tell.
+// Complexity is O(1).
 func (po *poset) Equal(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Equal with n1==n2")
@@ -433,6 +434,8 @@ func (po *poset) Equal(n1, n2 *Value) bool {
 // NonEqual returns true if n1!=n2. It returns false either when it is
 // certain that n1!=n2 is false, or if there is not enough information
 // to tell.
+// Complexity is O(n) (because it internally calls Ordered to see if we
+// can infer n1!=n2 from n1<n2 or n2<n1).
 func (po *poset) NonEqual(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Equal with n1==n2")
@@ -450,6 +453,7 @@ func (po *poset) NonEqual(n1, n2 *Value) bool {
 }
 
 // SetOrdered records that n1<n2. Returns false if this is a contradiction
+// Complexity is O(1) if n2 was never seen before, or O(n) otherwise.
 func (po *poset) SetOrder(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call SetOrder with n1==n2")
@@ -539,6 +543,7 @@ func (po *poset) SetOrder(n1, n2 *Value) bool {
 
 // SetEqual records that n1==n2. Returns false if this is a contradiction
 // (that is, if it is already recorded that n1<n2 or n2<n1).
+// Complexity is O(1) if n2 was never seen before, or O(n) otherwise.
 func (po *poset) SetEqual(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Add with n1==n2")
@@ -597,6 +602,7 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 
 // SetEqual records that n1==n2. Returns false if this is a contradiction
 // (that is, if it is already recorded that n1==n2).
+// Complexity is O(1).
 func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Equal with n1==n2")
@@ -611,10 +617,17 @@ func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 	return true
 }
 
+// Checkpoint saves the current state of the DAG so that it's possible
+// to later undo this state.
+// Complexity is O(1).
 func (po *poset) Checkpoint() {
 	po.undo = append(po.undo, posetUndo{typ: "checkpoint"})
 }
 
+// Undo restores the state of the poset to the previous checkpoint.
+// Complexity depends on the type of operations that were performed
+// since the last checkpoint; each Set* operation creates an undo
+// pass which Undo has to revert with a worst-case complexity of O(n).
 func (po *poset) Undo() {
 	if len(po.undo) == 0 {
 		panic("empty undo stack")
