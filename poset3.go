@@ -29,6 +29,7 @@ const (
 	flagDummy = 1 << iota
 )
 
+// FIXME: refactor this obscenity before mailing
 type posetUndo struct {
 	typ    string
 	idx    uint32
