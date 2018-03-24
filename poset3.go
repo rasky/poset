@@ -32,6 +32,7 @@ type posetUndo struct {
 	ID     ID
 	flags  uint8
 	refs   []uint32
+	ids    []ID
 }
 
 type posetNode struct {
@@ -71,8 +72,8 @@ func (po *poset) upush(s string, i, p uint32, flags uint8) {
 	po.undo = append(po.undo, posetUndo{typ: s, idx: i, parent: p, flags: flags})
 }
 
-func (po *poset) upushnew(s string, ID ID, i1, i2 uint32, refs []uint32) {
-	po.undo = append(po.undo, posetUndo{typ: s, ID: ID, idx: i1, parent: i2, refs: refs})
+func (po *poset) upushnew(s string, ID ID, i1, i2 uint32, refs []uint32, ids []ID) {
+	po.undo = append(po.undo, posetUndo{typ: s, ID: ID, idx: i1, parent: i2, refs: refs, ids: ids})
 }
 
 // addchild adds i2 as direct child of i1
@@ -114,9 +115,9 @@ func (po *poset) newnode(n *Value) uint32 {
 			panic("newnode for Value already inserted")
 		}
 		po.values[n.ID] = i
-		po.upushnew("newnode", n.ID, i, 0, nil)
+		po.upushnew("newnode", n.ID, i, 0, nil, nil)
 	} else {
-		po.upushnew("newdummy", ID(0), i, 0, nil)
+		po.upushnew("newdummy", ID(0), i, 0, nil, nil)
 	}
 	po.nodes = append(po.nodes, posetNode{})
 	return i
@@ -130,6 +131,8 @@ func (po *poset) aliasnode(n1, n2 *Value) {
 	}
 
 	var refs []uint32
+	var ids []ID
+
 	i2 := po.values[n2.ID]
 	if i2 != 0 {
 		// Rename all references to i2 into i1
@@ -143,10 +146,24 @@ func (po *poset) aliasnode(n1, n2 *Value) {
 				refs = append(refs, uint32(idx*2+1))
 			}
 		}
+
+		po.values[n2.ID] = i1
+
+		// See if there are other IDs to reassign
+		// Keep the above assignment separate so that in the normal case
+		// we don't allocate memory for ids.
+		for k, v := range po.values {
+			if v == i2 {
+				po.values[k] = i1
+				ids = append(ids, k)
+			}
+		}
+
+	} else {
+		po.values[n2.ID] = i1
 	}
 
-	po.upushnew("aliasnode", n2.ID, i1, i2, refs)
-	po.values[n2.ID] = i1
+	po.upushnew("aliasnode", n2.ID, i1, i2, refs, ids)
 }
 
 func (po *poset) isroot(r uint32) bool {
@@ -512,6 +529,11 @@ func (po *poset) Undo() {
 			} else {
 				// Give it back previous value
 				po.values[ID] = prev
+
+				// Restore other IDs previous value
+				for _, id := range pass.ids {
+					po.values[id] = prev
+				}
 
 				// Restore references to the previous value
 				for _, r := range pass.refs {
