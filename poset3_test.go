@@ -1,17 +1,20 @@
 package ssa
 
 import (
+	"fmt"
 	"testing"
 )
 
 func TestPoset(t *testing.T) {
 	const (
-		add = iota
-		addfail
-		ordered
-		orderedfail
-		checkpoint
-		undo
+		add         = "add"
+		addfail     = "addfail"
+		ordered     = "ordered"
+		orderedfail = "orderedfail"
+		alias       = "alias"
+		aliasfail   = "aliasfail"
+		checkpoint  = "checkpoint"
+		undo        = "undo"
 	)
 
 	var v [1024]*Value
@@ -21,7 +24,7 @@ func TestPoset(t *testing.T) {
 	}
 
 	var ops = []struct {
-		typ  int
+		typ  string
 		a, b int
 	}{
 		{orderedfail, 123, 124},
@@ -94,7 +97,7 @@ func TestPoset(t *testing.T) {
 		{ordered, 6, 101},
 		{ordered, 1, 101},
 
-		// Undo: 1<4<6<7<12
+		// Undo: 1<4<6<7<12, 100<101
 		{undo, 0, 0},
 		{orderedfail, 1, 100},
 		{orderedfail, 1, 101},
@@ -127,18 +130,49 @@ func TestPoset(t *testing.T) {
 		{ordered, 100, 101},
 		{orderedfail, 1, 101},
 
-		// Undo 2 times: 4<7<12
+		// Undo: 4<7<12
 		{undo, 0, 0},
 		{orderedfail, 1, 12},
 		{orderedfail, 1, 4},
 		{ordered, 4, 12},
 		{ordered, 100, 101},
 
-		// Undo 2 times: 100<101
+		// Undo: 100<101
 		{undo, 0, 0},
 		{orderedfail, 4, 7},
 		{orderedfail, 7, 12},
 		{ordered, 100, 101},
+
+		// Recreated DAG #1 from scratch, reusing same nodes.
+		// This also stresses that undo has done its job correctly.
+		// DAG: 1<2<(5|6), 101<102<(105|106<107)
+		{checkpoint, 0, 0},
+		{add, 101, 102},
+		{add, 102, 105},
+		{add, 102, 106},
+		{add, 106, 107},
+		{add, 1, 2},
+		{add, 2, 5},
+		{add, 2, 6},
+		{aliasfail, 1, 6},
+		{aliasfail, 107, 102},
+
+		// Now alias 2 and 102
+		// New DAG: (1|101)<2<(5|6|105|106<107)
+		{checkpoint, 0, 0},
+		{alias, 2, 102},
+		{ordered, 1, 107},
+		{ordered, 101, 6},
+		{ordered, 101, 105},
+		{ordered, 2, 106},
+		{ordered, 102, 6},
+		{alias, 2, 102}, // trivially pass
+
+		// Undo alias
+		{undo, 0, 0},
+		{orderedfail, 2, 102},
+		{orderedfail, 1, 107},
+		{orderedfail, 101, 6},
 	}
 
 	po := newPoset()
@@ -146,28 +180,41 @@ func TestPoset(t *testing.T) {
 		switch op.typ {
 		case add:
 			if !po.Add(v[op.a], v[op.b]) {
-				t.Errorf("op%d: add(%d,%d) failed", idx, op.a, op.b)
+				t.Errorf("op%d%v failed", idx, op)
 			}
 		case addfail:
 			if po.Add(v[op.a], v[op.b]) {
-				t.Errorf("op%d: addfail(%d,%d) passed", idx, op.a, op.b)
+				t.Errorf("op%d%v passed", idx, op)
 			}
 		case ordered:
 			if !po.Ordered(v[op.a], v[op.b]) {
-				t.Errorf("op%d: ordered(%d,%d) failed", idx, op.a, op.b)
+				t.Errorf("op%d%v failed", idx, op)
 			}
 		case orderedfail:
 			if po.Ordered(v[op.a], v[op.b]) {
-				t.Errorf("op%d: orderedfail(%d,%d) passed", idx, op.a, op.b)
+				t.Errorf("op%d%v passed", idx, op)
 			}
 		case checkpoint:
 			po.Checkpoint()
 		case undo:
 			po.Undo()
+		case alias:
+			if !po.Alias(v[op.a], v[op.b]) {
+				t.Errorf("op%d%v failed", idx, op)
+			}
+		case aliasfail:
+			if po.Alias(v[op.a], v[op.b]) {
+				t.Errorf("op%d%v passed", idx, op)
+			}
+		default:
+			panic("unimplemented")
 		}
 
+		po.dotdump(fmt.Sprintf("op%d.dot", idx), fmt.Sprintf("Last op: %v", op))
+
 		if err := po.checkIntegrity(); err != nil {
-			t.Fatalf("op%d: integrity error: %v", idx, err)
+			t.Error("Undo stack", po.undo)
+			t.Fatalf("op%d%v: integrity error: %v", idx, op, err)
 		}
 	}
 }

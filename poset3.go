@@ -3,6 +3,7 @@ package ssa
 import (
 	"errors"
 	"fmt"
+	"os"
 )
 
 const uintSize = 32 << (^uint(0) >> 32 & 1) // 32 or 64
@@ -22,20 +23,19 @@ func (bs bitset) Test(idx uint32) bool {
 
 const (
 	flagDummy = 1 << iota
-	flagNewNode
 )
 
 type posetUndo struct {
 	typ    string
 	idx    uint32
 	parent uint32
+	ID     ID
 	flags  uint8
+	refs   []uint32
 }
 
-var posetUndoCheckpoint = posetUndo{}
-
 type posetNode struct {
-	l, r uint32
+	l, r uint32 // left/right child
 }
 
 // poset is a union-find datastructure that can represent a partial order.
@@ -45,7 +45,7 @@ type posetNode struct {
 type poset struct {
 	lastidx uint32        // last generated dense index
 	values  map[ID]uint32 // map SSA values to dense indices
-	nodes   []posetNode   // given node i, c[i*2] and c[i*2+1] are the two children
+	nodes   []posetNode   // nodes (in all DAGs)
 	roots   []uint32      // list of root nodes (forest)
 	undo    []posetUndo
 }
@@ -68,7 +68,11 @@ func (po *poset) children(i uint32) (uint32, uint32) { return po.nodes[i].l, po.
 
 // upush records a new undo step
 func (po *poset) upush(s string, i, p uint32, flags uint8) {
-	po.undo = append(po.undo, posetUndo{s, i, p, flags})
+	po.undo = append(po.undo, posetUndo{typ: s, idx: i, parent: p, flags: flags})
+}
+
+func (po *poset) upushnew(s string, ID ID, i1, i2 uint32, refs []uint32) {
+	po.undo = append(po.undo, posetUndo{typ: s, ID: ID, idx: i1, parent: i2, refs: refs})
 }
 
 // addchild adds i2 as direct child of i1
@@ -106,10 +110,43 @@ func (po *poset) newnode(n *Value) uint32 {
 	i := po.lastidx + 1
 	po.lastidx++
 	if n != nil {
+		if po.values[n.ID] != 0 {
+			panic("newnode for Value already inserted")
+		}
 		po.values[n.ID] = i
+		po.upushnew("newnode", n.ID, i, 0, nil)
+	} else {
+		po.upushnew("newdummy", ID(0), i, 0, nil)
 	}
 	po.nodes = append(po.nodes, posetNode{})
 	return i
+}
+
+// aliasnode records that n2 is an alias of n1
+func (po *poset) aliasnode(n1, n2 *Value) {
+	i1 := po.values[n1.ID]
+	if i1 == 0 {
+		panic("aliasnode for non-existing node")
+	}
+
+	var refs []uint32
+	i2 := po.values[n2.ID]
+	if i2 != 0 {
+		// Rename all references to i2 into i1
+		for idx, n := range po.nodes {
+			if n.l == i2 {
+				po.setchl(uint32(idx), i1)
+				refs = append(refs, uint32(idx*2))
+			}
+			if n.r == i2 {
+				po.setchr(uint32(idx), i1)
+				refs = append(refs, uint32(idx*2+1))
+			}
+		}
+	}
+
+	po.upushnew("aliasnode", n2.ID, i1, i2, refs)
+	po.values[n2.ID] = i1
 }
 
 func (po *poset) isroot(r uint32) bool {
@@ -182,6 +219,9 @@ func (po *poset) dominates(i1, i2 uint32) bool {
 // Returns the root; if i is itself a root, it is returned.
 // Panic if i is not in any DAG.
 func (po *poset) findroot(i uint32) uint32 {
+	// TODO(rasky): if needed, a way to speed up this search is
+	// storing a bitset for each root using it as a mini bloom filter
+	// of nodes present under that root.
 	for _, r := range po.roots {
 		if po.dominates(r, i) {
 			return r
@@ -214,10 +254,18 @@ func (po *poset) checkIntegrity() (err error) {
 		}
 	}
 
+	// Verify that values contain the minimum set
+	for id, idx := range po.values {
+		if !seen.Test(idx) {
+			err = fmt.Errorf("spurious value [%d]=%d", id, idx)
+			return
+		}
+	}
+
 	// Verify that only existing nodes have non-zero children
 	for i, n := range po.nodes {
 		if n.l|n.r != 0 && !seen.Test(uint32(i)) {
-			err = fmt.Errorf("children of unknown node %d->%v", i/2, n)
+			err = fmt.Errorf("children of unknown node %d->%v", i, n)
 			return
 		}
 	}
@@ -225,12 +273,55 @@ func (po *poset) checkIntegrity() (err error) {
 	return
 }
 
+// dotdump dumps the poset in graphviz format for debugging
+func (po *poset) dotdump(fn string, title string) error {
+	f, err := os.Create(fn)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// Create reverse index mapping (taking aliases into account)
+	names := make(map[uint32]string)
+	for id, i := range po.values {
+		s := names[i]
+		if s == "" {
+			s = fmt.Sprintf("v%d", id)
+		} else {
+			s += fmt.Sprintf(", v%d", id)
+		}
+		names[i] = s
+	}
+
+	fmt.Fprintf(f, "digraph poset {\n")
+	for ridx, r := range po.roots {
+		fmt.Fprintf(f, "\tsubgraph root%d {\n", ridx)
+		po.dfs(r, func(i uint32) bool {
+			fmt.Fprintf(f, "\t\tnode%d [label=\"%s\"]\n", i, names[i])
+			chl, chr := po.children(i)
+			if chl != 0 {
+				fmt.Fprintf(f, "\t\tnode%d -> node%d\n", i, chl)
+			}
+			if chr != 0 {
+				fmt.Fprintf(f, "\t\tnode%d -> node%d\n", i, chr)
+			}
+			return false
+		})
+		fmt.Fprintf(f, "\t}\n")
+	}
+	fmt.Fprintf(f, "\tlabelloc=\"t\"\n")
+	fmt.Fprintf(f, "\tlabeldistance=\"3.0\"\n")
+	fmt.Fprintf(f, "\tlabel=%q\n", title)
+	fmt.Fprintf(f, "}\n")
+	return nil
+}
+
 // Ordered returns true if n1<n2. It panics if n1 and n2 are
 // the same object, to ease debugging, as this is trivially false
 // and should always be checked before calling Ordered when the caller
 // knows that it is a possibility.
 func (po *poset) Ordered(n1, n2 *Value) bool {
-	if n1 == n2 {
+	if n1.ID == n2.ID {
 		panic("should not call Ordered with n1==n2")
 	}
 
@@ -245,6 +336,10 @@ func (po *poset) Ordered(n1, n2 *Value) bool {
 
 // Add records that n1<n2. Returns false if this is a contradiction
 func (po *poset) Add(n1, n2 *Value) bool {
+	if n1.ID == n2.ID {
+		panic("should not call Add with n1==n2")
+	}
+
 	i1, f1 := po.values[n1.ID]
 	i2, f2 := po.values[n2.ID]
 
@@ -296,7 +391,7 @@ func (po *poset) Add(n1, n2 *Value) bool {
 		po.setchl(i1, i2)
 		po.changeroot(r, dummy)
 		po.upush("addleftdummy_1", dummy, 0, flagDummy)
-		po.upush("addleftdummy_2", i1, dummy, flagNewNode)
+		po.upush("addleftdummy_2", i1, dummy, 0)
 
 	case f1 && f2:
 		// Both n1 and n2 are in the poset. First, check if they're already related
@@ -327,8 +422,58 @@ func (po *poset) Add(n1, n2 *Value) bool {
 	return true
 }
 
+// Alias records that n1==n2. Returns false if this is a contradiction
+// (that is, if it is already recorded that n1<n2 or n2<n1).
+func (po *poset) Alias(n1, n2 *Value) bool {
+	if n1.ID == n2.ID {
+		panic("should not call Add with n1==n2")
+	}
+
+	i1, f1 := po.values[n1.ID]
+	i2, f2 := po.values[n2.ID]
+
+	switch {
+	case !f1 && !f2:
+		i1 = po.newnode(n1)
+		po.roots = append(po.roots, i1)
+		po.aliasnode(n1, n2)
+	case f1 && !f2:
+		po.aliasnode(n1, n2)
+	case !f1 && f2:
+		po.aliasnode(n2, n1)
+	case f1 && f2:
+		if i1 == i2 {
+			// Already aliased, ignore
+			return true
+		}
+
+		r1 := po.findroot(i1)
+		r2 := po.findroot(i2)
+		if r1 == r2 {
+			// If they're in the same DAG, they cannot possibly be equal.
+			return false
+		}
+
+		// Merge the DAGs. First, merge the roots
+		r := po.newnode(nil)
+		po.setchl(r, r1)
+		po.setchr(r, r2)
+		po.changeroot(r1, r)
+		po.removeroot(r2)
+		po.upush("alias_mergedag", r, 0, flagDummy)
+
+		// Set n2 as alias of n1. This will also update all the references
+		// to n2 to become references to n1
+		po.aliasnode(n1, n2)
+
+		// Connect i2 as child of i1 (possibly with a dummy node)
+		po.addchild(i1, i2)
+	}
+	return true
+}
+
 func (po *poset) Checkpoint() {
-	po.undo = append(po.undo, posetUndoCheckpoint)
+	po.undo = append(po.undo, posetUndo{typ: "checkpoint"})
 }
 
 func (po *poset) Undo() {
@@ -339,71 +484,102 @@ func (po *poset) Undo() {
 	for len(po.undo) > 0 {
 		pass := po.undo[len(po.undo)-1]
 		po.undo = po.undo[:len(po.undo)-1]
-		if pass == posetUndoCheckpoint {
-			break
-		}
 
-		i, p := pass.idx, pass.parent
-		l, r := po.children(i)
-		isdummy := (pass.flags & flagDummy) != 0
-		isnew := (pass.flags & flagNewNode) != 0
+		switch pass.typ {
+		case "checkpoint":
+			return
 
-		// We need to remove node i. This is the potential layout
-		// (but some nodes could be zero):
-		//
-		//    p
-		//    |
-		//    i
-		//   / \
-		//  l   r
-		//
-		if p != 0 {
-			// p exists, so i is not a root node.
-			// If i has two children, we assume it's been
-			// parented to p while it was already in the DAG,
-			// so we simply disconnect the parent.
-			// Otherwise, connect the only child to the parent.
-			var child uint32
-			if isdummy {
-				child = l
-				if r != 0 {
-					child = r
+		case "newdummy":
+			po.setchl(pass.idx, 0)
+			po.setchr(pass.idx, 0)
+
+		case "newnode":
+			if po.values[pass.ID] != pass.idx {
+				panic("invalid newnode undo pass")
+			}
+			delete(po.values, pass.ID)
+			po.setchl(pass.idx, 0)
+			po.setchr(pass.idx, 0)
+
+		case "aliasnode":
+			ID, cur, prev := pass.ID, pass.idx, pass.parent
+			if po.values[ID] != cur {
+				panic("invalid aliasnode id in undo pass")
+			}
+			if prev == 0 {
+				// Born as an alias, die as an alias
+				delete(po.values, ID)
+			} else {
+				// Give it back previous value
+				po.values[ID] = prev
+
+				// Restore references to the previous value
+				for _, r := range pass.refs {
+					idx := r / 2
+					if r&1 == 0 {
+						if po.nodes[idx].l != cur {
+							panic("invalid aliasnode ref in undo pass")
+						}
+						po.nodes[idx].l = prev
+					} else {
+						if po.nodes[idx].r != cur {
+							panic("invalid aliasnode ref in undo pass")
+						}
+						po.nodes[idx].r = prev
+					}
 				}
 			}
-			if po.chl(p) == i {
-				po.setchl(p, child)
-			} else {
-				po.setchr(p, child)
-			}
-			// Disconnect children of i. While not strictly necessary (as i
-			// is now removed from the DAG), it's useful for debugging purposes:
-			// checkIntegrity() will detect dangling children and report bugs.
-			if isdummy || isnew {
-				po.setchl(i, 0)
-				po.setchr(i, 0)
-			}
-		} else {
-			// Undo adding a new root
-			if l != 0 && r != 0 {
-				// Split DAGs in two
-				po.changeroot(i, l)
-				po.roots = append(po.roots, r)
-				po.setchl(i, 0)
-				po.setchr(i, 0)
-			} else {
-				child := l
-				if r != 0 {
-					child = r
+
+		default:
+			i, p := pass.idx, pass.parent
+			l, r := po.children(i)
+			isdummy := (pass.flags & flagDummy) != 0
+
+			// We need to remove node i. This is the potential layout
+			// (but some nodes could be zero):
+			//
+			//    p
+			//    |
+			//    i
+			//   / \
+			//  l   r
+			//
+			if p != 0 {
+				// p exists, so i is not a root node.
+				// If i has two children, we assume it's been
+				// parented to p while it was already in the DAG,
+				// so we simply disconnect the parent.
+				// Otherwise, connect the only child to the parent.
+				var child uint32
+				if isdummy {
+					child = l
+					if r != 0 {
+						child = r
+					}
 				}
-				if child != 0 {
-					po.changeroot(i, child)
+				if po.chl(p) == i {
+					po.setchl(p, child)
 				} else {
-					po.removeroot(i)
+					po.setchr(p, child)
 				}
-				po.setchl(i, 0)
-				po.setchr(i, 0)
+			} else {
+				// Undo adding a new root
+				if l != 0 && r != 0 {
+					// Split DAGs in two
+					po.changeroot(i, l)
+					po.roots = append(po.roots, r)
+				} else {
+					child := l
+					if r != 0 {
+						child = r
+					}
+					if child != 0 {
+						po.changeroot(i, child)
+					} else {
+						po.removeroot(i)
+					}
+				}
 			}
 		}
-
 	}
 }
