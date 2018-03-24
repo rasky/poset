@@ -170,9 +170,37 @@ func TestPoset(t *testing.T) {
 
 		// Undo alias
 		{undo, 0, 0},
+		{checkpoint, 0, 0},
 		{orderedfail, 2, 102},
 		{orderedfail, 1, 107},
 		{orderedfail, 101, 6},
+		{alias, 2, 100},
+		{ordered, 1, 107},
+		{ordered, 100, 6},
+
+		// Alias with new node
+		{undo, 0, 0},
+		{checkpoint, 0, 0},
+		{alias, 2, 400},
+		{alias, 401, 2},
+		{ordered, 1, 400},
+		{ordered, 400, 6},
+		{ordered, 1, 401},
+		{ordered, 401, 6},
+
+		// Alias unseen nodes and then connect
+		{checkpoint, 0, 0},
+		{alias, 500, 501},
+		{alias, 102, 501},
+		{ordered, 501, 106},
+		{ordered, 100, 500},
+		{alias, 500, 501},
+
+		// Undo back to beginning, leave the poset empty
+		{undo, 0, 0},
+		{undo, 0, 0},
+		{undo, 0, 0},
+		{undo, 0, 0},
 	}
 
 	po := newPoset()
@@ -215,6 +243,19 @@ func TestPoset(t *testing.T) {
 		if err := po.checkIntegrity(); err != nil {
 			t.Error("Undo stack", po.undo)
 			t.Fatalf("op%d%v: integrity error: %v", idx, op, err)
+		}
+	}
+
+	// Check that the poset is completely empty
+	if len(po.values) != 0 {
+		t.Errorf("end of test: non-empty value map: %v", po.values)
+	}
+	if len(po.roots) != 0 {
+		t.Errorf("end of test: non-empty root list: %v", po.roots)
+	}
+	for idx, n := range po.nodes {
+		if n.l|n.r != 0 {
+			t.Errorf("end of test: non-empty node %v->[%d,%d]", idx, n.l, n.r)
 		}
 	}
 }

@@ -314,7 +314,7 @@ func (po *poset) dotdump(fn string, title string) error {
 	for ridx, r := range po.roots {
 		fmt.Fprintf(f, "\tsubgraph root%d {\n", ridx)
 		po.dfs(r, func(i uint32) bool {
-			fmt.Fprintf(f, "\t\tnode%d [label=\"%s\"]\n", i, names[i])
+			fmt.Fprintf(f, "\t\tnode%d [label=<%s <font point-size=\"6\">[%d]</font>>]\n", i, names[i], i)
 			chl, chr := po.children(i)
 			if chl != 0 {
 				fmt.Fprintf(f, "\t\tnode%d -> node%d\n", i, chl)
@@ -453,6 +453,7 @@ func (po *poset) Alias(n1, n2 *Value) bool {
 	case !f1 && !f2:
 		i1 = po.newnode(n1)
 		po.roots = append(po.roots, i1)
+		po.upush("alias_newroot", i1, 0, 0)
 		po.aliasnode(n1, n2)
 	case f1 && !f2:
 		po.aliasnode(n1, n2)
@@ -471,7 +472,8 @@ func (po *poset) Alias(n1, n2 *Value) bool {
 			return false
 		}
 
-		// Merge the DAGs. First, merge the roots
+		// Unless i2 is a root itself, we need to merge the two DAGs creating
+		// a merge node.
 		r := po.newnode(nil)
 		po.setchl(r, r1)
 		po.setchr(r, r2)
@@ -483,7 +485,8 @@ func (po *poset) Alias(n1, n2 *Value) bool {
 		// to n2 to become references to n1
 		po.aliasnode(n1, n2)
 
-		// Connect i2 as child of i1 (possibly with a dummy node)
+		// Connect i2 (now dummy) as child of i1. This allows to keep the correct
+		// order with its children.
 		po.addchild(i1, i2)
 	}
 	return true
@@ -529,10 +532,16 @@ func (po *poset) Undo() {
 			} else {
 				// Give it back previous value
 				po.values[ID] = prev
+				fmt.Println(po.undo)
+				fmt.Println("restore", ID, prev)
 
 				// Restore other IDs previous value
 				for _, id := range pass.ids {
+					if po.values[id] != cur {
+						panic("invalid aliasnode id in undo pass")
+					}
 					po.values[id] = prev
+					fmt.Println("restore", id, prev)
 				}
 
 				// Restore references to the previous value
