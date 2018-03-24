@@ -344,17 +344,28 @@ func (po *poset) Ordered(n1, n2 *Value) bool {
 
 	i1, f1 := po.values[n1.ID]
 	i2, f2 := po.values[n2.ID]
-	if !f1 || !f2 {
+	if !f1 || !f2 || i1 == i2 {
 		return false
 	}
 
 	return po.dominates(i1, i2)
 }
 
-// Add records that n1<n2. Returns false if this is a contradiction
-func (po *poset) Add(n1, n2 *Value) bool {
+// Equal returns true if n1==n2. Panics if n1 and n2 are the same object.
+func (po *poset) Equal(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
-		panic("should not call Add with n1==n2")
+		panic("should not call Equal with n1==n2")
+	}
+
+	i1, f1 := po.values[n1.ID]
+	i2, f2 := po.values[n2.ID]
+	return f1 && f2 && i1 == i2
+}
+
+// SetOrdered records that n1<n2. Returns false if this is a contradiction
+func (po *poset) SetOrder(n1, n2 *Value) bool {
+	if n1.ID == n2.ID {
+		panic("should not call SetOrder with n1==n2")
 	}
 
 	i1, f1 := po.values[n1.ID]
@@ -439,9 +450,9 @@ func (po *poset) Add(n1, n2 *Value) bool {
 	return true
 }
 
-// Alias records that n1==n2. Returns false if this is a contradiction
+// SetEqual records that n1==n2. Returns false if this is a contradiction
 // (that is, if it is already recorded that n1<n2 or n2<n1).
-func (po *poset) Alias(n1, n2 *Value) bool {
+func (po *poset) SetEqual(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Add with n1==n2")
 	}
