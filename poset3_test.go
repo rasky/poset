@@ -332,3 +332,48 @@ func TestPoset(t *testing.T) {
 		{Undo, 0, 0},
 	})
 }
+
+func TestStrict(t *testing.T) {
+
+	testPosetOps(t, []posetTestOp{
+		{Checkpoint, 0, 0},
+		// Build: 20!=30, 10<20<=30<40. The 20<=30 will become 20<30.
+		{SetNonEqual, 20, 30},
+		{SetOrder, 10, 20},
+		{SetOrderOrEqual, 20, 30}, // this is affected by 20!=30
+		{SetOrder, 30, 40},
+
+		{Ordered, 10, 30},
+		{Ordered, 20, 30},
+		{Ordered, 10, 40},
+		{OrderedOrEqual, 10, 30},
+		{OrderedOrEqual, 20, 30},
+		{OrderedOrEqual, 10, 40},
+
+		{Undo, 0, 0},
+
+		// Now do the opposite: first build the DAG and then learn non-equality
+		{Checkpoint, 0, 0},
+		{SetOrder, 10, 20},
+		{SetOrderOrEqual, 20, 30}, // this is affected by 20!=30
+		{SetOrder, 30, 40},
+
+		{Ordered, 10, 30},
+		{Ordered_Fail, 20, 30},
+		{Ordered, 10, 40},
+		{OrderedOrEqual, 10, 30},
+		{OrderedOrEqual, 20, 30},
+		{OrderedOrEqual, 10, 40},
+
+		{SetNonEqual, 20, 30},
+		{Ordered, 10, 30},
+		{Ordered, 20, 30},
+		{Ordered, 10, 40},
+		{OrderedOrEqual, 10, 30},
+		{OrderedOrEqual, 20, 30},
+		{OrderedOrEqual, 10, 40},
+
+		{Undo, 0, 0},
+	})
+
+}

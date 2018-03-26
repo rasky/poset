@@ -818,7 +818,31 @@ func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 		return false
 	}
 
+	// Record non-equality
 	po.setnoneq(n1.ID, n2.ID)
+
+	// If there is a direct (non-transitive) relation i1<=i2 or i2<=i1,
+	// change it into i1<i2 / i2<i1.
+	i1, f1 := po.values[n1.ID]
+	i2, f2 := po.values[n2.ID]
+	if f1 && f2 {
+		i1l, i1r := po.edges(i1)
+		if !i1l.Strict() && i1l.Target() == i2 {
+			po.setchl(i1, newedge(i2, true))
+		}
+		if !i1r.Strict() && i1r.Target() == i2 {
+			po.setchr(i1, newedge(i2, true))
+		}
+
+		i2l, i2r := po.edges(i2)
+		if !i2l.Strict() && i2l.Target() == i1 {
+			po.setchl(i2, newedge(i1, true))
+		}
+		if !i2r.Strict() && i2r.Target() == i1 {
+			po.setchr(i2, newedge(i1, true))
+		}
+	}
+
 	return true
 }
 
