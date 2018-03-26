@@ -384,7 +384,84 @@ func TestStrict(t *testing.T) {
 		{Ordered, 20, 35},
 		{Undo, 0, 0},
 
+		// Learn <= and >=
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 50, 60},
+		{SetOrderOrEqual, 60, 50},
+		{OrderedOrEqual, 50, 60},
+		{OrderedOrEqual, 60, 50},
+		{Ordered_Fail, 50, 60},
+		{Ordered_Fail, 60, 50},
+		{Equal, 50, 60},
+		{Equal, 60, 50},
+		{NonEqual_Fail, 50, 60},
+		{NonEqual_Fail, 60, 50},
+		{Undo, 0, 0},
+
 		{Undo, 0, 0},
 	})
+}
 
+func TestSetEqual(t *testing.T) {
+	testPosetOps(t, []posetTestOp{
+		// 10<=20<=30<40,  20<=100<110
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 10, 20},
+		{SetOrderOrEqual, 20, 30},
+		{SetOrder, 30, 40},
+		{SetOrderOrEqual, 20, 100},
+		{SetOrder, 100, 110},
+
+		// Try learning 10==20.
+		{Checkpoint, 0, 0},
+		{SetEqual, 10, 20},
+		{OrderedOrEqual, 10, 20},
+		{Ordered_Fail, 10, 20},
+		{Equal, 10, 20},
+		{Undo, 0, 0},
+
+		// Try learning 20==10.
+		{Checkpoint, 0, 0},
+		{SetEqual, 20, 10},
+		{OrderedOrEqual, 10, 20},
+		{Ordered_Fail, 10, 20},
+		{Equal, 10, 20},
+		{Undo, 0, 0},
+
+		// Try learning 10==40 or 30==40 or 10==110.
+		{Checkpoint, 0, 0},
+		{SetEqual_Fail, 10, 40},
+		{SetEqual_Fail, 40, 10},
+		{SetEqual_Fail, 30, 40},
+		{SetEqual_Fail, 40, 30},
+		{SetEqual_Fail, 10, 110},
+		{SetEqual_Fail, 110, 10},
+		{Undo, 0, 0},
+
+		// Try learning 40==110, and then 10==40 or 10=110
+		{Checkpoint, 0, 0},
+		{SetEqual, 40, 110},
+		{SetEqual_Fail, 10, 40},
+		{SetEqual_Fail, 40, 10},
+		{SetEqual_Fail, 10, 110},
+		{SetEqual_Fail, 110, 10},
+		{Undo, 0, 0},
+
+		// Try learning 40<20 or 30<20 or 110<10
+		{Checkpoint, 0, 0},
+		{SetOrder_Fail, 40, 20},
+		{SetOrder_Fail, 30, 20},
+		{SetOrder_Fail, 110, 10},
+		{Undo, 0, 0},
+
+		// Try learning 30<=20
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 30, 20},
+		{Equal, 30, 20},
+		{OrderedOrEqual, 30, 100},
+		{Ordered, 30, 110},
+		{Undo, 0, 0},
+
+		{Undo, 0, 0},
+	})
 }

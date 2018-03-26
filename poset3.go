@@ -295,14 +295,14 @@ func (po *poset) removeroot(r uint32) {
 // If the visit ends, false is returned.
 func (po *poset) dfs(r uint32, strict bool, f func(i uint32) bool) bool {
 	closed := newBitset(int(po.lastidx + 1))
-	open := make([]uint32, 1, po.lastidx+1)
+	open := make([]uint32, 1, 64)
 	open[0] = r
 
 	if strict {
 		// Do a first DFS; walk all paths and stop when we find a strict
 		// edge, building a "next" list of nodes reachable through strict
 		// edges. This will be the bootstrap open list for the real DFS.
-		next := make([]uint32, 0, po.lastidx+1)
+		next := make([]uint32, 0, 64)
 
 		if f(r) {
 			return true
@@ -390,6 +390,25 @@ func (po *poset) mergeroot(r1, r2 uint32) uint32 {
 	po.removeroot(r2)
 	po.upush("mergeroot", r, 0)
 	return r
+}
+
+// collapsepath marks i1 and i2 as equal and collapses as equal all
+// nodes across all paths between i2 and i2. If a strict edge is
+// found, the function does not modify the DAG and returns false.
+func (po *poset) collapsepath(n1, n2 *Value) bool {
+	i1, i2 := po.values[n1.ID], po.values[n2.ID]
+	if po.dominates(i1, i2, true) {
+		return false
+	}
+
+	// TODO: for now, only handle the simple case of i2 being child of i1
+	l, r := po.edges(i1)
+	if l.Target() == i2 || r.Target() == i2 {
+		po.aliasnode(n1, n2)
+		po.addchild(i1, i2, false)
+		return true
+	}
+	return true
 }
 
 // Check whether it is recorded that id1!=id2
@@ -711,10 +730,8 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 				return false
 			}
 
-			// We're in case #5 or #7. Collapse the path, any strict edge
-			// we find means we're in a contradiction.
-			// TODO: for now just ignore
-			return true
+			// We're in case #5 or #7.
+			return po.collapsepath(n2, n1)
 		}
 
 		// We don't know of any existing relation between n1 and n2. They could
@@ -759,7 +776,7 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 		panic("should not call Add with n1==n2")
 	}
 
-	// If we recored that n1!=n2, this is a contradiction.
+	// If we recorded that n1!=n2, this is a contradiction.
 	if po.isnoneq(n1.ID, n2.ID) {
 		return false
 	}
@@ -783,15 +800,21 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 			return true
 		}
 
-		r1 := po.findroot(i1)
-		r2 := po.findroot(i2)
-		if r1 == r2 {
-			// If they're in the same DAG, they cannot possibly be equal.
-			return false
+		// If we already knew that n1<=n2, we can collapse the path to
+		// record n1==n2 (and viceversa).
+		if po.dominates(i1, i2, false) {
+			return po.collapsepath(n1, n2)
+		}
+		if po.dominates(i2, i1, false) {
+			return po.collapsepath(n2, n1)
 		}
 
-		// Merge the two DAGs so we can record relations between the nodes
-		po.mergeroot(r1, r2)
+		r1 := po.findroot(i1)
+		r2 := po.findroot(i2)
+		if r1 != r2 {
+			// Merge the two DAGs so we can record relations between the nodes
+			po.mergeroot(r1, r2)
+		}
 
 		// Set n2 as alias of n1. This will also update all the references
 		// to n2 to become references to n1
