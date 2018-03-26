@@ -141,6 +141,7 @@ func TestPoset(t *testing.T) {
 		{SetOrder, 100, 101}, // repeat
 		{NonEqual, 100, 101},
 		{NonEqual, 101, 100},
+		{SetEqual_Fail, 100, 101},
 
 		// Dag #1: 4<=7<12
 		{Checkpoint, 0, 0},
@@ -153,6 +154,10 @@ func TestPoset(t *testing.T) {
 		{NonEqual, 4, 12},
 		{NonEqual, 12, 4},
 		{NonEqual_Fail, 4, 100},
+		{OrderedOrEqual, 4, 12},
+		{OrderedOrEqual_Fail, 12, 4},
+		{OrderedOrEqual, 4, 7},
+		{OrderedOrEqual, 7, 4},
 
 		// Dag #1: 1<4<=7<12
 		{Checkpoint, 0, 0},
@@ -187,6 +192,10 @@ func TestPoset(t *testing.T) {
 		{Ordered, 4, 7},
 		{OrderedOrEqual, 4, 7},
 		{SetOrder_Fail, 6, 4},
+		{Ordered_Fail, 7, 6},
+		{Ordered_Fail, 7, 4},
+		{OrderedOrEqual_Fail, 7, 6},
+		{OrderedOrEqual_Fail, 7, 4},
 
 		// Merge: 1<4<6, 4<=7<12, 6<101
 		{Checkpoint, 0, 0},
@@ -411,6 +420,12 @@ func TestSetEqual(t *testing.T) {
 		{SetOrder, 30, 40},
 		{SetOrderOrEqual, 20, 100},
 		{SetOrder, 100, 110},
+		{OrderedOrEqual, 10, 30},
+		{OrderedOrEqual, 30, 10},
+		{Ordered_Fail, 10, 30},
+		{Ordered_Fail, 30, 10},
+		{Ordered, 10, 40},
+		{Ordered_Fail, 40, 10},
 
 		// Try learning 10==20.
 		{Checkpoint, 0, 0},

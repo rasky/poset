@@ -591,7 +591,8 @@ func (po *poset) OrderedOrEqual(n1, n2 *Value) bool {
 		return false
 	}
 
-	return i1 == i2 || po.dominates(i1, i2, false)
+	return i1 == i2 || po.dominates(i1, i2, false) ||
+		(po.dominates(i2, i1, false) && !po.dominates(i2, i1, true))
 }
 
 // Equal returns true if n1==n2. It returns false either when it is
