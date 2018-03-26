@@ -40,74 +40,76 @@ func testPosetOps(t *testing.T, ops []posetTestOp) {
 
 	po := newPoset()
 	for idx, op := range ops {
+		t.Logf("op%d%v", idx, op)
 		switch op.typ {
 		case SetOrder:
 			if !po.SetOrder(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case SetOrder_Fail:
 			if po.SetOrder(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case SetOrderOrEqual:
 			if !po.SetOrderOrEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case SetOrderOrEqual_Fail:
 			if po.SetOrderOrEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case Ordered:
 			if !po.Ordered(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case Ordered_Fail:
 			if po.Ordered(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case OrderedOrEqual:
 			if !po.OrderedOrEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case OrderedOrEqual_Fail:
 			if po.OrderedOrEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case SetEqual:
 			if !po.SetEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case SetEqual_Fail:
 			if po.SetEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case Equal:
 			if !po.Equal(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case Equal_Fail:
 			if po.Equal(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case SetNonEqual:
 			if !po.SetNonEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case SetNonEqual_Fail:
 			if po.SetNonEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case NonEqual:
 			if !po.NonEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v failed", idx, op)
+				t.Errorf("FAILED: op%d%v failed", idx, op)
 			}
 		case NonEqual_Fail:
 			if po.NonEqual(v[op.a], v[op.b]) {
-				t.Errorf("op%d%v passed", idx, op)
+				t.Errorf("FAILED: op%d%v passed", idx, op)
 			}
 		case Checkpoint:
 			po.Checkpoint()
 		case Undo:
+			t.Log("Undo stack", po.undo)
 			po.Undo()
 		default:
 			panic("unimplemented")
@@ -116,7 +118,6 @@ func testPosetOps(t *testing.T, ops []posetTestOp) {
 		po.DotDump(fmt.Sprintf("op%d.dot", idx), fmt.Sprintf("Last op: %v", op))
 
 		if err := po.CheckIntegrity(); err != nil {
-			t.Error("Undo stack", po.undo)
 			t.Fatalf("op%d%v: integrity error: %v", idx, op, err)
 		}
 	}
@@ -365,6 +366,7 @@ func TestStrict(t *testing.T) {
 		{OrderedOrEqual, 20, 30},
 		{OrderedOrEqual, 10, 40},
 
+		{Checkpoint, 0, 0},
 		{SetNonEqual, 20, 30},
 		{Ordered, 10, 30},
 		{Ordered, 20, 30},
@@ -372,6 +374,15 @@ func TestStrict(t *testing.T) {
 		{OrderedOrEqual, 10, 30},
 		{OrderedOrEqual, 20, 30},
 		{OrderedOrEqual, 10, 40},
+		{Undo, 0, 0},
+
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 30, 35},
+		{OrderedOrEqual, 20, 35},
+		{Ordered_Fail, 20, 35},
+		{SetNonEqual, 20, 35},
+		{Ordered, 20, 35},
+		{Undo, 0, 0},
 
 		{Undo, 0, 0},
 	})
