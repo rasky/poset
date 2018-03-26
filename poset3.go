@@ -13,6 +13,12 @@ func newBitset(n int) bitset {
 	return make(bitset, (n+uintSize-1)/uintSize)
 }
 
+func (bs bitset) Reset() {
+	for i := range bs {
+		bs[i] = 0
+	}
+}
+
 func (bs bitset) Set(idx uint32) {
 	bs[idx/uintSize] |= 1 << (idx % uintSize)
 }
@@ -40,19 +46,40 @@ type posetUndo struct {
 	ids    []ID
 }
 
+// A poset edge. The zero value is the null/empty edge.
+// Packs target node index (31 bits) and strict flag (1 bit).
+type posetEdge uint32
+
+func newedge(t uint32, strict bool) posetEdge {
+	s := uint32(0)
+	if strict {
+		s = 1
+	}
+	return posetEdge(t<<1 | s)
+}
+func (e posetEdge) Target() uint32 { return uint32(e) >> 1 }
+func (e posetEdge) Strict() bool   { return uint32(e)&1 != 0 }
+func (e posetEdge) String() string {
+	s := fmt.Sprint(e.Target())
+	if e.Strict() {
+		s += "*"
+	}
+	return s
+}
+
 // posetNode is a node of a DAG within the poset.
 type posetNode struct {
-	l, r uint32
+	l, r posetEdge
 }
 
 // poset is a union-find data structure that can represent a partially ordered set
 // of SSA values. Given a binary relation that creates a partial order (eg: '<'),
-// clients can record relations between SSA values using SetOrdered, and later
+// clients can record relations between SSA values using SetOrder, and later
 // check relations (in the transitive closure) with Ordered. For instance,
 // if SetOrder is called to record that A<B and B<C, Ordered will later confirm
 // that A<C.
 //
-// It is possible record equality relations between SSA values with SetEqual and check
+// It is possible to record equality relations between SSA values with SetEqual and check
 // equality with Equal. Equality propagates into the transitive closure for the partial
 // order so that if we know that A<B<C and later learn that A==D, Ordered will return
 // true for D<C.
@@ -64,7 +91,8 @@ type posetNode struct {
 // It is also possible to record inequality relations between nodes with SetNonEqual;
 // given that non-equality is not transitive, the only effect is that a later call
 // to SetEqual for the same values will fail. NonEqual checks whether it is known that
-// the nodes are different, which could
+// the nodes are different, either because SetNonEqual was called before, or because
+// we know that that they are strictly ordered.
 //
 // It is implemented as a forest of DAGs; in each DAG, if node A dominates B,
 // it means that A<B. Equality is represented by mapping two SSA values to the same
@@ -87,7 +115,7 @@ type posetNode struct {
 //
 type poset struct {
 	lastidx uint32        // last generated dense index
-	values  map[ID]uint32 // map SSA values to dense indices
+	values  map[ID]uint32 // map SSA values to dense indexes
 	nodes   []posetNode   // nodes (in all DAGs)
 	roots   []uint32      // list of root nodes (forest)
 	noneq   map[ID]bitset // non-equal relations
@@ -105,11 +133,16 @@ func newPoset() *poset {
 }
 
 // Handle children
-func (po *poset) setchl(i uint32, l uint32)          { po.nodes[i].l = l }
-func (po *poset) setchr(i uint32, r uint32)          { po.nodes[i].r = r }
-func (po *poset) chl(i uint32) uint32                { return po.nodes[i].l }
-func (po *poset) chr(i uint32) uint32                { return po.nodes[i].r }
-func (po *poset) children(i uint32) (uint32, uint32) { return po.nodes[i].l, po.nodes[i].r }
+func (po *poset) setchl(i uint32, l posetEdge) { po.nodes[i].l = l }
+func (po *poset) setchr(i uint32, r posetEdge) { po.nodes[i].r = r }
+func (po *poset) chl(i uint32) uint32          { return po.nodes[i].l.Target() }
+func (po *poset) chr(i uint32) uint32          { return po.nodes[i].r.Target() }
+func (po *poset) edges(i uint32) (posetEdge, posetEdge) {
+	return po.nodes[i].l, po.nodes[i].r
+}
+func (po *poset) children(i uint32) (uint32, uint32) {
+	return po.nodes[i].l.Target(), po.nodes[i].r.Target()
+}
 
 // upush records a new undo step
 func (po *poset) upush(s string, i, p uint32, flags uint8) {
@@ -124,14 +157,14 @@ func (po *poset) upushneq(s string, id1 ID, id2 ID) {
 	po.undo = append(po.undo, posetUndo{typ: s, ID: id1, idx: uint32(id2)})
 }
 
-// addchild adds i2 as direct child of i1
-func (po *poset) addchild(i1, i2 uint32) {
-	i1l, i1r := po.children(i1)
+// addchild adds i2 as direct child of i1.
+func (po *poset) addchild(i1, i2 uint32, strict bool) {
+	i1l, i1r := po.edges(i1)
 	if i1l == 0 {
-		po.setchl(i1, i2)
+		po.setchl(i1, newedge(i2, strict))
 		po.upush("addchild_left", i2, i1, 0)
 	} else if i1r == 0 {
-		po.setchr(i1, i2)
+		po.setchr(i1, newedge(i2, strict))
 		po.upush("addchild_right", i2, i1, 0)
 	} else {
 		// If n1 already has two children, add an intermediate dummy
@@ -147,14 +180,14 @@ func (po *poset) addchild(i1, i2 uint32) {
 		//      i1r   n2
 		//
 		dummy := po.newnode(nil)
-		if (i1^i2^i1l^i1r)&1 != 0 { // non-deterministic
+		if (i1^i2)&1 != 0 { // non-deterministic
 			po.setchl(dummy, i1r)
-			po.setchr(dummy, i2)
-			po.setchr(i1, dummy)
+			po.setchr(dummy, newedge(i2, strict))
+			po.setchr(i1, newedge(dummy, false))
 		} else {
 			po.setchl(dummy, i1l)
-			po.setchr(dummy, i2)
-			po.setchl(i1, dummy)
+			po.setchr(dummy, newedge(i2, strict))
+			po.setchl(i1, newedge(dummy, false))
 		}
 		po.upush("addchild_1", dummy, i1, flagDummy)
 		po.upush("addchild_2", i2, dummy, 0)
@@ -193,12 +226,12 @@ func (po *poset) aliasnode(n1, n2 *Value) {
 	if i2 != 0 {
 		// Rename all references to i2 into i1
 		for idx, n := range po.nodes {
-			if n.l == i2 {
-				po.setchl(uint32(idx), i1)
+			if n.l.Target() == i2 {
+				po.setchl(uint32(idx), newedge(i1, n.l.Strict()))
 				refs = append(refs, uint32(idx*2))
 			}
-			if n.r == i2 {
-				po.setchr(uint32(idx), i1)
+			if n.r.Target() == i2 {
+				po.setchr(uint32(idx), newedge(i1, n.l.Strict()))
 				refs = append(refs, uint32(idx*2+1))
 			}
 		}
@@ -253,12 +286,53 @@ func (po *poset) removeroot(r uint32) {
 
 // dfs performs a depth-first search within the DAG whose root is r.
 // f is the visit function called for each node; if it returns true,
-// the search is aborted and true is returned.
+// the search is aborted and true is returned. The root node is
+// visited too.
+// If strict, ignore edges across a path until at least one
+// strict edge is found. For instance, for a chain A<=B<=C<D<=E<F,
+// a strict walk visits A,D,E,F.
 // If the visit ends, false is returned.
-func (po *poset) dfs(r uint32, f func(i uint32) bool) bool {
+func (po *poset) dfs(r uint32, strict bool, f func(i uint32) bool) bool {
 	closed := newBitset(int(po.lastidx + 1))
 	open := make([]uint32, 1, po.lastidx+1)
 	open[0] = r
+
+	if strict {
+		// Do a first DFS; walk all paths and stop when we find a strict
+		// edge, building a "next" list of nodes reachable through strict
+		// edges. This will be the bootstrap open list for the real DFS.
+		next := make([]uint32, 0, po.lastidx+1)
+
+		if f(r) {
+			return true
+		}
+		for len(open) > 0 {
+			i := open[len(open)-1]
+			open = open[:len(open)-1]
+
+			if !closed.Test(i) {
+				closed.Set(i)
+
+				l, r := po.edges(i)
+				if l != 0 {
+					if l.Strict() {
+						next = append(next, l.Target())
+					} else {
+						open = append(open, l.Target())
+					}
+				}
+				if r != 0 {
+					if r.Strict() {
+						next = append(next, r.Target())
+					} else {
+						open = append(open, r.Target())
+					}
+				}
+			}
+		}
+		open = next
+		closed.Reset()
+	}
 
 	for len(open) > 0 {
 		i := open[len(open)-1]
@@ -269,21 +343,24 @@ func (po *poset) dfs(r uint32, f func(i uint32) bool) bool {
 				return true
 			}
 			closed.Set(i)
-			l, r := po.children(i)
+			l, r := po.edges(i)
 			if l != 0 {
-				open = append(open, l)
+				open = append(open, l.Target())
 			}
 			if r != 0 {
-				open = append(open, r)
+				open = append(open, r.Target())
 			}
 		}
 	}
 	return false
 }
 
-// Returns true if i1 dominates i2 (that is, i1<i2 maybe transitively)
-func (po *poset) dominates(i1, i2 uint32) bool {
-	return po.dfs(i1, func(n uint32) bool {
+// Returns true if i1 dominates i2.
+// If strict ==  true: if the function returns true, then i1 <  i2.
+// If strict == false: if the function returns true, then i1 <= i2.
+// If the function returns false, no relation is known.
+func (po *poset) dominates(i1, i2 uint32, strict bool) bool {
+	return po.dfs(i1, strict, func(n uint32) bool {
 		return n == i2
 	})
 }
@@ -296,11 +373,22 @@ func (po *poset) findroot(i uint32) uint32 {
 	// storing a bitset for each root using it as a mini bloom filter
 	// of nodes present under that root.
 	for _, r := range po.roots {
-		if po.dominates(r, i) {
+		if po.dominates(r, i, false) {
 			return r
 		}
 	}
 	panic("findroot didn't find any root")
+}
+
+// mergeroot merges two DAGs into one DAG by creating a new dummy root
+func (po *poset) mergeroot(r1, r2 uint32) uint32 {
+	r := po.newnode(nil)
+	po.setchl(r, newedge(r1, false))
+	po.setchr(r, newedge(r2, false))
+	po.changeroot(r1, r)
+	po.removeroot(r2)
+	po.upush("mergeroot", r, 0, flagDummy)
+	return r
 }
 
 // Check whether it is recorded that id1!=id2
@@ -345,7 +433,7 @@ func (po *poset) CheckIntegrity() (err error) {
 			return
 		}
 
-		po.dfs(r, func(i uint32) bool {
+		po.dfs(r, false, func(i uint32) bool {
 			if seen.Test(i) {
 				err = errors.New("duplicate node")
 				return true
@@ -403,8 +491,7 @@ func (po *poset) CheckEmpty() error {
 	return nil
 }
 
-// DotDump dumps the poset in graphviz format to file fn, with the specified
-// title.
+// DotDump dumps the poset in graphviz format to file fn, with the specified title.
 func (po *poset) DotDump(fn string, title string) error {
 	f, err := os.Create(fn)
 	if err != nil {
@@ -425,16 +512,20 @@ func (po *poset) DotDump(fn string, title string) error {
 	}
 
 	fmt.Fprintf(f, "digraph poset {\n")
+	fmt.Fprintf(f, "\tedge [ fontsize=10 ]\n")
 	for ridx, r := range po.roots {
 		fmt.Fprintf(f, "\tsubgraph root%d {\n", ridx)
-		po.dfs(r, func(i uint32) bool {
+		po.dfs(r, false, func(i uint32) bool {
 			fmt.Fprintf(f, "\t\tnode%d [label=<%s <font point-size=\"6\">[%d]</font>>]\n", i, names[i], i)
-			chl, chr := po.children(i)
-			if chl != 0 {
-				fmt.Fprintf(f, "\t\tnode%d -> node%d\n", i, chl)
-			}
-			if chr != 0 {
-				fmt.Fprintf(f, "\t\tnode%d -> node%d\n", i, chr)
+			chl, chr := po.edges(i)
+			for _, ch := range []posetEdge{chl, chr} {
+				if ch != 0 {
+					if ch.Strict() {
+						fmt.Fprintf(f, "\t\tnode%d -> node%d [label=\" <\" color=\"red\"]\n", i, ch.Target())
+					} else {
+						fmt.Fprintf(f, "\t\tnode%d -> node%d [label=\" <=\" color=\"green\"]\n", i, ch.Target())
+					}
+				}
 			}
 			return false
 		})
@@ -458,11 +549,29 @@ func (po *poset) Ordered(n1, n2 *Value) bool {
 
 	i1, f1 := po.values[n1.ID]
 	i2, f2 := po.values[n2.ID]
-	if !f1 || !f2 || i1 == i2 {
+	if !f1 || !f2 {
 		return false
 	}
 
-	return po.dominates(i1, i2)
+	return i1 != i2 && po.dominates(i1, i2, true)
+}
+
+// Ordered returns true if n1<=n2. It returns false either when it is
+// certain that n1<=n2 is false, or if there is not enough information
+// to tell.
+// Complexity is O(n).
+func (po *poset) OrderedOrEqual(n1, n2 *Value) bool {
+	if n1.ID == n2.ID {
+		panic("should not call Ordered with n1==n2")
+	}
+
+	i1, f1 := po.values[n1.ID]
+	i2, f2 := po.values[n2.ID]
+	if !f1 || !f2 {
+		return false
+	}
+
+	return i1 == i2 || po.dominates(i1, i2, false)
 }
 
 // Equal returns true if n1==n2. It returns false either when it is
@@ -500,11 +609,13 @@ func (po *poset) NonEqual(n1, n2 *Value) bool {
 	return false
 }
 
-// SetOrdered records that n1<n2. Returns false if this is a contradiction
-// Complexity is O(1) if n2 was never seen before, or O(n) otherwise.
-func (po *poset) SetOrder(n1, n2 *Value) bool {
-	if n1.ID == n2.ID {
-		panic("should not call SetOrder with n1==n2")
+// setOrder records that n1<n2 or n1<=n2 (depending on strict).
+// Implements SetOrder() and SetOrderOrEqual()
+func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
+	// If we are trying to record n1<=n2 but we learned that n1!=n2,
+	// record n1<n2, as it provides more information.
+	if !strict && po.isnoneq(n1.ID, n2.ID) {
+		strict = true
 	}
 
 	i1, f1 := po.values[n1.ID]
@@ -517,7 +628,7 @@ func (po *poset) SetOrder(n1, n2 *Value) bool {
 		// Create a new DAG to record the relation.
 		i1, i2 = po.newnode(n1), po.newnode(n2)
 		po.roots = append(po.roots, i1)
-		po.setchl(i1, i2)
+		po.setchl(i1, newedge(i2, strict))
 		po.upush("addnew_1", i1, 0, 0)
 		po.upush("addnew_2", i2, i1, 0)
 
@@ -525,7 +636,7 @@ func (po *poset) SetOrder(n1, n2 *Value) bool {
 		// n1 is in one of the DAGs, while n2 is not. Add n2 as children
 		// of n1.
 		i2 = po.newnode(n2)
-		po.addchild(i1, i2)
+		po.addchild(i1, i2, strict)
 
 	case !f1 && f2:
 		// n1 is not in any DAG but n2 is. If n2 is a root, we can put
@@ -534,7 +645,7 @@ func (po *poset) SetOrder(n1, n2 *Value) bool {
 		i1 = po.newnode(n1)
 
 		if po.isroot(i2) {
-			po.setchl(i1, i2)
+			po.setchl(i1, newedge(i2, strict))
 			po.changeroot(i2, i1)
 			po.upush("addasroot", i1, 0, flagDummy)
 			return true
@@ -553,40 +664,92 @@ func (po *poset) SetOrder(n1, n2 *Value) bool {
 		//                    i2
 		//
 		dummy := po.newnode(nil)
-		po.setchl(dummy, r)
-		po.setchr(dummy, i1)
-		po.setchl(i1, i2)
+		po.setchl(dummy, newedge(r, false))
+		po.setchr(dummy, newedge(i1, false))
+		po.setchl(i1, newedge(i2, strict))
 		po.changeroot(r, dummy)
 		po.upush("addleftdummy_1", dummy, 0, flagDummy)
 		po.upush("addleftdummy_2", i1, dummy, 0)
 
 	case f1 && f2:
-		// Both n1 and n2 are in the poset. First, check if they're already related
-		if po.dominates(i1, i2) {
+		// Both n1 and n2 are in the poset. This is the complex part of the algorithm
+		// as we need to find many different cases and DAG shapes.
+
+		// Check if n1 somehow dominates n2
+		if po.dominates(i1, i2, false) {
+			// This is the table of all cases we need to handle:
+			//
+			//      DAG         New    Action
+			//      ---------------------------------------------------
+			// #1:  A<=B<=C  |  A<=C | do nothing
+			// #2:  A<=B<=C  |  A<C  | add strict edge (A<C)
+			// #3:  A<B<C    |  A<=C | do nothing (we already know more)
+			// #4:  A<B<C    |  A<C  | do nothing
+
+			// Check if we're in case #2
+			if strict && !po.dominates(i1, i2, true) {
+				po.addchild(i1, i2, true)
+				return true
+			}
+
+			// Case #1, #3 o #4: nothing to do
 			return true
 		}
-		if po.dominates(i2, i1) {
-			// Contradiction!
-			return false
+
+		// Check if n2 somehow dominates n1
+		if po.dominates(i2, i1, false) {
+			// This is the table of all cases we need to handle:
+			//
+			//      DAG         New    Action
+			//      ---------------------------------------------------
+			// #5:  C<=B<=A  |  A<=C | TODO: collapse path (learn that A=B=C)
+			// #6:  C<=B<=A  |  A<C  | contradiction
+			// #7:  C<B<A    |  A<=C | TODO: contradiction in the path
+			// #8:  C<B<A    |  A<C  | contradiction
+
+			if strict {
+				// Cases #6 and #8: contradiction
+				return false
+			}
+
+			// We're in case #5 or #7. Collapse the path, any strict edge
+			// we find means we're in a contradiction.
+			// TODO: for now just ignore
+			return true
 		}
 
-		// Find their roots
+		// We don't know of any existing relation between n1 and n2. They could
+		// be part of the same DAG or not.
+		// Find their roots to check whether they are in the same DAG.
 		r1, r2 := po.findroot(i1), po.findroot(i2)
 		if r1 != r2 {
-			// We need to merge the two DAGs. Merge the two roots with a dummy node
-			r := po.newnode(nil)
-			po.setchl(r, r1)
-			po.setchr(r, r2)
-			po.changeroot(r1, r)
-			po.removeroot(r2)
-			po.upush("addboth", r, 0, flagDummy)
+			// We need to merge the two DAGs to record a relation between the nodes
+			po.mergeroot(r1, r2)
 		}
 
 		// Connect n1 and n2
-		po.addchild(i1, i2)
+		po.addchild(i1, i2, strict)
 	}
 
 	return true
+}
+
+// SetOrder records that n1<n2. Returns false if this is a contradiction
+// Complexity is O(1) if n2 was never seen before, or O(n) otherwise.
+func (po *poset) SetOrder(n1, n2 *Value) bool {
+	if n1.ID == n2.ID {
+		panic("should not call SetOrder with n1==n2")
+	}
+	return po.setOrder(n1, n2, true)
+}
+
+// SetOrderOrEqual records that n1<=n2. Returns false if this is a contradiction
+// Complexity is O(1) if n2 was never seen before, or O(n) otherwise.
+func (po *poset) SetOrderOrEqual(n1, n2 *Value) bool {
+	if n1.ID == n2.ID {
+		panic("should not call SetOrder with n1==n2")
+	}
+	return po.setOrder(n1, n2, false)
 }
 
 // SetEqual records that n1==n2. Returns false if this is a contradiction
@@ -628,14 +791,8 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 			return false
 		}
 
-		// Unless i2 is a root itself, we need to merge the two DAGs creating
-		// a merge node.
-		r := po.newnode(nil)
-		po.setchl(r, r1)
-		po.setchr(r, r2)
-		po.changeroot(r1, r)
-		po.removeroot(r2)
-		po.upush("alias_mergedag", r, 0, flagDummy)
+		// Merge the two DAGs so we can record relations between the nodes
+		po.mergeroot(r1, r2)
 
 		// Set n2 as alias of n1. This will also update all the references
 		// to n2 to become references to n1
@@ -643,7 +800,7 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 
 		// Connect i2 (now dummy) as child of i1. This allows to keep the correct
 		// order with its children.
-		po.addchild(i1, i2)
+		po.addchild(i1, i2, false)
 	}
 	return true
 }
@@ -725,25 +882,26 @@ func (po *poset) Undo() {
 				}
 
 				// Restore references to the previous value
-				for _, r := range pass.refs {
-					idx := r / 2
-					if r&1 == 0 {
-						if po.nodes[idx].l != cur {
+				for _, root := range pass.refs {
+					idx := root / 2
+					l, r := &po.nodes[idx].l, &po.nodes[idx].r
+					if root&1 == 0 {
+						if l.Target() != cur {
 							panic("invalid aliasnode ref in undo pass")
 						}
-						po.nodes[idx].l = prev
+						*l = newedge(prev, l.Strict())
 					} else {
-						if po.nodes[idx].r != cur {
+						if r.Target() != cur {
 							panic("invalid aliasnode ref in undo pass")
 						}
-						po.nodes[idx].r = prev
+						*r = newedge(prev, r.Strict())
 					}
 				}
 			}
 
 		default:
 			i, p := pass.idx, pass.parent
-			l, r := po.children(i)
+			l, r := po.edges(i)
 			isdummy := (pass.flags & flagDummy) != 0
 
 			// We need to remove node i. This is the potential layout
@@ -761,7 +919,7 @@ func (po *poset) Undo() {
 				// parented to p while it was already in the DAG,
 				// so we simply disconnect the parent.
 				// Otherwise, connect the only child to the parent.
-				var child uint32
+				var child posetEdge
 				if isdummy {
 					child = l
 					if r != 0 {
@@ -777,15 +935,15 @@ func (po *poset) Undo() {
 				// Undo adding a new root
 				if l != 0 && r != 0 {
 					// Split DAGs in two
-					po.changeroot(i, l)
-					po.roots = append(po.roots, r)
+					po.changeroot(i, l.Target())
+					po.roots = append(po.roots, r.Target())
 				} else {
 					child := l
 					if r != 0 {
 						child = r
 					}
 					if child != 0 {
-						po.changeroot(i, child)
+						po.changeroot(i, child.Target())
 					} else {
 						po.removeroot(i)
 					}
