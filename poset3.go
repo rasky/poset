@@ -263,6 +263,10 @@ func (po *poset) newconst(n *Value) {
 		val1 := n.AuxUnsigned()
 		for _, ptr := range po.constants {
 			val2 := ptr.AuxUnsigned()
+			if val1 == val2 {
+				po.aliasnode(ptr, n)
+				return
+			}
 			if val2 < val1 && (lowerptr == nil || val2 > lower) {
 				lower = val2
 				lowerptr = ptr
@@ -276,6 +280,10 @@ func (po *poset) newconst(n *Value) {
 		val1 := n.AuxInt
 		for _, ptr := range po.constants {
 			val2 := ptr.AuxInt
+			if val1 == val2 {
+				po.aliasnode(ptr, n)
+				return
+			}
 			if val2 < val1 && (lowerptr == nil || val2 > lower) {
 				lower = val2
 				lowerptr = ptr
