@@ -312,8 +312,9 @@ func (po *poset) newconst(n *Value) {
 		r2 := po.findroot(i2)
 		dummy := po.newnode(nil)
 		po.changeroot(r2, dummy)
+		po.upush("changeroot", dummy, newedge(r2, false))
 		po.addchild(dummy, r2, false)
-		po.addchild(dummy, i2, false)
+		po.addchild(dummy, i, false)
 		po.addchild(i, i2, true)
 	}
 
