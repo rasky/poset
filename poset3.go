@@ -302,7 +302,10 @@ func (po *poset) newconst(n *Value) {
 	case higherptr != nil:
 		i2 := po.values[higherptr.ID]
 		r2 := po.findroot(i2)
-		po.addchild(r2, i, false)
+		dummy := po.newnode(nil)
+		po.changeroot(r2, dummy)
+		po.addchild(dummy, r2, false)
+		po.addchild(dummy, i2, false)
 		po.addchild(i, i2, true)
 	}
 

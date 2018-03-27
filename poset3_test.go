@@ -526,6 +526,18 @@ func TestConst(t *testing.T) {
 		{Ordered, vconst(-30), 1},
 		{Undo, 0, 0},
 
+		{Checkpoint, 0, 0},
+		{SetNonEqual, 1, vconst(4)},
+		{SetNonEqual, 1, vconst(6)},
+		{NonEqual, 1, vconst(4)},
+		{NonEqual_Fail, 1, vconst(5)},
+		{NonEqual, 1, vconst(6)},
+		{Equal_Fail, 1, vconst(4)},
+		{Equal_Fail, 1, vconst(5)},
+		{Equal_Fail, 1, vconst(6)},
+		{Equal_Fail, 1, vconst(7)},
+		{Undo, 0, 0},
+
 		{Undo, 0, 0},
 	})
 
@@ -540,6 +552,14 @@ func TestConst(t *testing.T) {
 		{Ordered_Fail, 100, vconst(15)},
 		{Ordered_Fail, vconst(15), 100},
 
+		{Undo, 0, 0},
+	})
+
+	testPosetOps(t, false, []posetTestOp{
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 1, vconst(3)},
+		{SetNonEqual, 1, vconst(0)},
+		{Ordered_Fail, 1, vconst(0)},
 		{Undo, 0, 0},
 	})
 }
