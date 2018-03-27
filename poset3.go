@@ -41,6 +41,12 @@ type posetUndo struct {
 	ids  []ID
 }
 
+const (
+	// poset handle unsigned numbers.
+	// This is used to correctly implement constant chaining. Default is signed.
+	posetFlagUnsigned = 1 << iota
+)
+
 // A poset edge. The zero value is the null/empty edge.
 // Packs target node index (31 bits) and strict flag (1 bit).
 type posetEdge uint32
@@ -109,21 +115,29 @@ type posetNode struct {
 //          J    K
 //
 type poset struct {
-	lastidx uint32        // last generated dense index
-	values  map[ID]uint32 // map SSA values to dense indexes
-	nodes   []posetNode   // nodes (in all DAGs)
-	roots   []uint32      // list of root nodes (forest)
-	noneq   map[ID]bitset // non-equal relations
-	undo    []posetUndo
+	lastidx   uint32        // last generated dense index
+	flags     uint8         // internal flags
+	values    map[ID]uint32 // map SSA values to dense indexes
+	constants []*Value      // record SSA constants together with their value
+	nodes     []posetNode   // nodes (in all DAGs)
+	roots     []uint32      // list of root nodes (forest)
+	noneq     map[ID]bitset // non-equal relations
+	undo      []posetUndo   // undo chain
 }
 
-func newPoset() *poset {
+func newPoset(unsigned bool) *poset {
+	var flags uint8
+	if unsigned {
+		flags |= posetFlagUnsigned
+	}
 	return &poset{
-		values: make(map[ID]uint32),
-		nodes:  make([]posetNode, 1, 1024),
-		roots:  make([]uint32, 0, 64),
-		noneq:  make(map[ID]bitset),
-		undo:   make([]posetUndo, 0, 256),
+		flags:     flags,
+		values:    make(map[ID]uint32),
+		constants: make([]*Value, 0, 64),
+		nodes:     make([]posetNode, 1, 1024),
+		roots:     make([]uint32, 0, 64),
+		noneq:     make(map[ID]bitset),
+		undo:      make([]posetUndo, 0, 256),
 	}
 }
 
@@ -200,6 +214,7 @@ func (po *poset) addchild(i1, i2 uint32, strict bool) {
 func (po *poset) newnode(n *Value) uint32 {
 	i := po.lastidx + 1
 	po.lastidx++
+	po.nodes = append(po.nodes, posetNode{})
 	if n != nil {
 		if po.values[n.ID] != 0 {
 			panic("newnode for Value already inserted")
@@ -209,8 +224,89 @@ func (po *poset) newnode(n *Value) uint32 {
 	} else {
 		po.upushnew("newnode", 0, i)
 	}
-	po.nodes = append(po.nodes, posetNode{})
 	return i
+}
+
+// lookup searches for a SSA value into the forest of DAGS, and return its node.
+// Constants are materialized on the fly during lookup.
+func (po *poset) lookup(n *Value) (uint32, bool) {
+	i, f := po.values[n.ID]
+	if !f && n.isGenericIntConst() {
+		po.newconst(n)
+		i, f = po.values[n.ID]
+	}
+	return i, f
+}
+
+// newconst creates a node for a constant. It links it to other constants, so
+// that n<=5 is detected true when n<=3 is known to be true.
+// TODO: this is O(N), fix it.
+func (po *poset) newconst(n *Value) {
+	if !n.isGenericIntConst() {
+		panic("newconst on non-constant")
+	}
+
+	// If this is the first constant, put it into a new root
+	// and leave it alone.
+	if len(po.constants) == 0 {
+		i := po.newnode(n)
+		po.roots = append(po.roots, i)
+		po.upush("newroot", i, 0)
+		po.constants = append(po.constants, n)
+		return
+	}
+
+	var lowerptr, higherptr *Value
+
+	if po.flags&posetFlagUnsigned != 0 {
+		var lower, higher uint64
+		val1 := n.AuxUnsigned()
+		for _, ptr := range po.constants {
+			val2 := ptr.AuxUnsigned()
+			if val2 < val1 && (lowerptr == nil || val2 > lower) {
+				lower = val2
+				lowerptr = ptr
+			} else if val2 > val1 && (higherptr == nil || val2 < higher) {
+				higher = val2
+				higherptr = ptr
+			}
+		}
+	} else {
+		var lower, higher int64
+		val1 := n.AuxInt
+		for _, ptr := range po.constants {
+			val2 := ptr.AuxInt
+			if val2 < val1 && (lowerptr == nil || val2 > lower) {
+				lower = val2
+				lowerptr = ptr
+			} else if val2 > val1 && (higherptr == nil || val2 < higher) {
+				higher = val2
+				higherptr = ptr
+			}
+		}
+	}
+
+	if lowerptr == nil && higherptr == nil {
+		panic("no constant found")
+	}
+
+	i := po.newnode(n)
+	switch {
+	case lowerptr != nil && higherptr != nil:
+		po.addchild(po.values[lowerptr.ID], i, true)
+		po.addchild(i, po.values[higherptr.ID], true)
+
+	case lowerptr != nil:
+		po.addchild(po.values[lowerptr.ID], i, true)
+
+	case higherptr != nil:
+		i2 := po.values[higherptr.ID]
+		r2 := po.findroot(i2)
+		po.addchild(r2, i, false)
+		po.addchild(i, i2, true)
+	}
+
+	po.constants = append(po.constants, n)
 }
 
 // aliasnode records that n2 is an alias of n1
@@ -457,6 +553,7 @@ func (po *poset) CheckIntegrity() (err error) {
 		}
 
 		po.dfs(r, false, func(i uint32) bool {
+			fmt.Println(r, i)
 			if seen.Test(i) {
 				err = errors.New("duplicate node")
 				return true
@@ -500,22 +597,25 @@ func (po *poset) CheckIntegrity() (err error) {
 func (po *poset) CheckEmpty() error {
 	// Check that the poset is completely empty
 	if len(po.values) != 0 {
-		return fmt.Errorf("end of test: non-empty value map: %v", po.values)
+		return fmt.Errorf("non-empty value map: %v", po.values)
 	}
 	if len(po.roots) != 0 {
-		return fmt.Errorf("end of test: non-empty root list: %v", po.roots)
+		return fmt.Errorf("non-empty root list: %v", po.roots)
 	}
 	for _, bs := range po.noneq {
 		for _, x := range bs {
 			if x != 0 {
-				return fmt.Errorf("end of test: non-empty noneq map")
+				return fmt.Errorf("non-empty noneq map")
 			}
 		}
 	}
 	for idx, n := range po.nodes {
 		if n.l|n.r != 0 {
-			return fmt.Errorf("end of test: non-empty node %v->[%d,%d]", idx, n.l, n.r)
+			return fmt.Errorf("non-empty node %v->[%d,%d]", idx, n.l, n.r)
 		}
+	}
+	if len(po.constants) != 0 {
+		return fmt.Errorf("non-empty constant")
 	}
 	return nil
 }
@@ -540,12 +640,36 @@ func (po *poset) DotDump(fn string, title string) error {
 		names[i] = s
 	}
 
+	// Create constant mapping
+	consts := make(map[uint32]int64)
+	for _, v := range po.constants {
+		idx := po.values[v.ID]
+		if po.flags&posetFlagUnsigned != 0 {
+			consts[idx] = int64(v.AuxUnsigned())
+		} else {
+			consts[idx] = v.AuxInt
+		}
+	}
+
 	fmt.Fprintf(f, "digraph poset {\n")
 	fmt.Fprintf(f, "\tedge [ fontsize=10 ]\n")
 	for ridx, r := range po.roots {
 		fmt.Fprintf(f, "\tsubgraph root%d {\n", ridx)
 		po.dfs(r, false, func(i uint32) bool {
-			fmt.Fprintf(f, "\t\tnode%d [label=<%s <font point-size=\"6\">[%d]</font>>]\n", i, names[i], i)
+			if val, ok := consts[i]; ok {
+				// Constant
+				var vals string
+				if po.flags&posetFlagUnsigned != 0 {
+					vals = fmt.Sprint(uint64(val))
+				} else {
+					vals = fmt.Sprint(int64(val))
+				}
+				fmt.Fprintf(f, "\t\tnode%d [shape=box style=filled fillcolor=cadetblue1 label=<%s <font point-size=\"6\">%s [%d]</font>>]\n",
+					i, vals, names[i], i)
+			} else {
+				// Normal SSA value
+				fmt.Fprintf(f, "\t\tnode%d [label=<%s <font point-size=\"6\">[%d]</font>>]\n", i, names[i], i)
+			}
 			chl, chr := po.edges(i)
 			for _, ch := range []posetEdge{chl, chr} {
 				if ch != 0 {
@@ -576,8 +700,8 @@ func (po *poset) Ordered(n1, n2 *Value) bool {
 		panic("should not call Ordered with n1==n2")
 	}
 
-	i1, f1 := po.values[n1.ID]
-	i2, f2 := po.values[n2.ID]
+	i1, f1 := po.lookup(n1)
+	i2, f2 := po.lookup(n2)
 	if !f1 || !f2 {
 		return false
 	}
@@ -594,8 +718,8 @@ func (po *poset) OrderedOrEqual(n1, n2 *Value) bool {
 		panic("should not call Ordered with n1==n2")
 	}
 
-	i1, f1 := po.values[n1.ID]
-	i2, f2 := po.values[n2.ID]
+	i1, f1 := po.lookup(n1)
+	i2, f2 := po.lookup(n2)
 	if !f1 || !f2 {
 		return false
 	}
@@ -613,8 +737,8 @@ func (po *poset) Equal(n1, n2 *Value) bool {
 		panic("should not call Equal with n1==n2")
 	}
 
-	i1, f1 := po.values[n1.ID]
-	i2, f2 := po.values[n2.ID]
+	i1, f1 := po.lookup(n1)
+	i2, f2 := po.lookup(n2)
 	return f1 && f2 && i1 == i2
 }
 
@@ -648,8 +772,8 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 		strict = true
 	}
 
-	i1, f1 := po.values[n1.ID]
-	i2, f2 := po.values[n2.ID]
+	i1, f1 := po.lookup(n1)
+	i2, f2 := po.lookup(n2)
 
 	switch {
 	case !f1 && !f2:
@@ -736,9 +860,9 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 			//
 			//      DAG         New    Action
 			//      ---------------------------------------------------
-			// #5:  C<=B<=A  |  A<=C | TODO: collapse path (learn that A=B=C)
+			// #5:  C<=B<=A  |  A<=C | collapse path (learn that A=B=C)
 			// #6:  C<=B<=A  |  A<C  | contradiction
-			// #7:  C<B<A    |  A<=C | TODO: contradiction in the path
+			// #7:  C<B<A    |  A<=C | contradiction in the path
 			// #8:  C<B<A    |  A<C  | contradiction
 
 			if strict {
@@ -792,13 +916,18 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 		panic("should not call Add with n1==n2")
 	}
 
+	// SetEqual between different constants is always false
+	if n1.isGenericIntConst() && n2.isGenericIntConst() && n1.AuxInt != n2.AuxInt {
+		return false
+	}
+
 	// If we recorded that n1!=n2, this is a contradiction.
 	if po.isnoneq(n1.ID, n2.ID) {
 		return false
 	}
 
-	i1, f1 := po.values[n1.ID]
-	i2, f2 := po.values[n2.ID]
+	i1, f1 := po.lookup(n1)
+	i2, f2 := po.lookup(n2)
 
 	switch {
 	case !f1 && !f2:
@@ -861,8 +990,8 @@ func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 
 	// If we know that i1<=i2 but not i1<i2, learn that as we
 	// now know that they are not equal. Do the same for i2<=i1.
-	i1, f1 := po.values[n1.ID]
-	i2, f2 := po.values[n2.ID]
+	i1, f1 := po.lookup(n1)
+	i2, f2 := po.lookup(n2)
 	if f1 && f2 {
 		if po.dominates(i1, i2, false) && !po.dominates(i1, i2, true) {
 			po.addchild(i1, i2, true)
@@ -917,6 +1046,12 @@ func (po *poset) Undo() {
 			}
 			po.setchl(pass.idx, 0)
 			po.setchr(pass.idx, 0)
+
+			// If it was the last inserted constant, remove it
+			nc := len(po.constants)
+			if nc > 0 && po.constants[nc-1].ID == pass.ID {
+				po.constants = po.constants[:nc-1]
+			}
 
 		case "aliasnode":
 			ID, prev := pass.ID, pass.idx

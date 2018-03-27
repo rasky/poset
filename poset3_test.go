@@ -31,14 +31,25 @@ type posetTestOp struct {
 	a, b int
 }
 
-func testPosetOps(t *testing.T, ops []posetTestOp) {
-	var v [1024]*Value
+func vconst(i int) int {
+	if i < -128 || i >= 128 {
+		panic("invalid const")
+	}
+	return 1000 + 128 + i
+}
+
+func testPosetOps(t *testing.T, unsigned bool, ops []posetTestOp) {
+	var v [1256]*Value
 	for i := range v {
 		v[i] = new(Value)
 		v[i].ID = ID(i)
+		if i >= 1000 {
+			v[i].Op = OpConst64
+			v[i].AuxInt = int64(i - 1000 - 128)
+		}
 	}
 
-	po := newPoset()
+	po := newPoset(unsigned)
 	for idx, op := range ops {
 		t.Logf("op%d%v", idx, op)
 		switch op.typ {
@@ -129,7 +140,7 @@ func testPosetOps(t *testing.T, ops []posetTestOp) {
 }
 
 func TestPoset(t *testing.T) {
-	testPosetOps(t, []posetTestOp{
+	testPosetOps(t, false, []posetTestOp{
 		{Ordered_Fail, 123, 124},
 
 		// Dag #0: 100<101
@@ -345,7 +356,7 @@ func TestPoset(t *testing.T) {
 
 func TestStrict(t *testing.T) {
 
-	testPosetOps(t, []posetTestOp{
+	testPosetOps(t, false, []posetTestOp{
 		{Checkpoint, 0, 0},
 		// Build: 20!=30, 10<20<=30<40. The 20<=30 will become 20<30.
 		{SetNonEqual, 20, 30},
@@ -412,7 +423,7 @@ func TestStrict(t *testing.T) {
 }
 
 func TestSetEqual(t *testing.T) {
-	testPosetOps(t, []posetTestOp{
+	testPosetOps(t, false, []posetTestOp{
 		// 10<=20<=30<40,  20<=100<110
 		{Checkpoint, 0, 0},
 		{SetOrderOrEqual, 10, 20},
@@ -480,6 +491,54 @@ func TestSetEqual(t *testing.T) {
 		{OrderedOrEqual, 30, 100},
 		{Ordered, 30, 110},
 		{Undo, 0, 0},
+
+		{Undo, 0, 0},
+	})
+}
+
+func TestConst(t *testing.T) {
+	testPosetOps(t, false, []posetTestOp{
+		{Checkpoint, 0, 0},
+		{SetOrder, 1, vconst(15)},
+		{SetOrderOrEqual, 100, vconst(120)},
+		{Ordered, 1, vconst(15)},
+		{Ordered, 1, vconst(120)},
+		{OrderedOrEqual, 1, vconst(120)},
+		{OrderedOrEqual, 100, vconst(120)},
+		{Ordered_Fail, 100, vconst(15)},
+		{Ordered_Fail, vconst(15), 100},
+
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 1, 5},
+		{SetOrderOrEqual, 5, 25},
+		{SetEqual, 20, vconst(20)},
+		{SetEqual, 25, vconst(25)},
+		{Ordered, 1, 20},
+		{Ordered, 1, vconst(30)},
+		{Undo, 0, 0},
+
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, 1, 5},
+		{SetOrderOrEqual, 5, 25},
+		{SetEqual, vconst(-20), 5},
+		{SetEqual, vconst(-25), 1},
+		{Ordered, 1, 5},
+		{Ordered, vconst(-30), 1},
+		{Undo, 0, 0},
+
+		{Undo, 0, 0},
+	})
+
+	testPosetOps(t, true, []posetTestOp{
+		{Checkpoint, 0, 0},
+		{SetOrder, 1, vconst(15)},
+		{SetOrderOrEqual, 100, vconst(-5)}, // -5 is a very big number in unsigned
+		{Ordered, 1, vconst(15)},
+		{Ordered, 1, vconst(-5)},
+		{OrderedOrEqual, 1, vconst(-5)},
+		{OrderedOrEqual, 100, vconst(-5)},
+		{Ordered_Fail, 100, vconst(15)},
+		{Ordered_Fail, vconst(15), 100},
 
 		{Undo, 0, 0},
 	})
