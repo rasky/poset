@@ -226,14 +226,17 @@ func (po *poset) aliasnode(n1, n2 *Value) {
 	i2 := po.values[n2.ID]
 	if i2 != 0 {
 		// Rename all references to i2 into i1
+		// (do not touch i1 itself, otherwise we can create useless self-loops)
 		for idx, n := range po.nodes {
-			if n.l.Target() == i2 {
-				po.setchl(uint32(idx), newedge(i1, n.l.Strict()))
-				refs = append(refs, uint32(idx*2))
-			}
-			if n.r.Target() == i2 {
-				po.setchr(uint32(idx), newedge(i1, n.l.Strict()))
-				refs = append(refs, uint32(idx*2+1))
+			if uint32(idx) != i1 {
+				if n.l.Target() == i2 {
+					po.setchl(uint32(idx), newedge(i1, n.l.Strict()))
+					refs = append(refs, uint32(idx*2))
+				}
+				if n.r.Target() == i2 {
+					po.setchr(uint32(idx), newedge(i1, n.r.Strict()))
+					refs = append(refs, uint32(idx*2+1))
+				}
 			}
 		}
 
@@ -476,9 +479,15 @@ func (po *poset) CheckIntegrity() (err error) {
 
 	// Verify that only existing nodes have non-zero children
 	for i, n := range po.nodes {
-		if n.l|n.r != 0 && !seen.Test(uint32(i)) {
-			err = fmt.Errorf("children of unknown node %d->%v", i, n)
-			return
+		if n.l|n.r != 0 {
+			if !seen.Test(uint32(i)) {
+				err = fmt.Errorf("children of unknown node %d->%v", i, n)
+				return
+			}
+			if n.l.Target() == uint32(i) || n.r.Target() == uint32(i) {
+				err = fmt.Errorf("self-loop on node %d", i)
+				return
+			}
 		}
 	}
 
@@ -691,6 +700,12 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 		po.addchild(i1, i2, strict)
 
 	case f1 && f2:
+		// If the nodes are aliased, fail only if we're setting a strict order
+		// (that is, we cannot set n1<n2 if n1==n2).
+		if i1 == i2 {
+			return !strict
+		}
+
 		// Both n1 and n2 are in the poset. This is the complex part of the algorithm
 		// as we need to find many different cases and DAG shapes.
 

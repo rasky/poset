@@ -433,6 +433,10 @@ func TestSetEqual(t *testing.T) {
 		{OrderedOrEqual, 10, 20},
 		{Ordered_Fail, 10, 20},
 		{Equal, 10, 20},
+		{SetOrderOrEqual, 10, 20},
+		{SetOrderOrEqual, 20, 10},
+		{SetOrder_Fail, 10, 20},
+		{SetOrder_Fail, 20, 10},
 		{Undo, 0, 0},
 
 		// Try learning 20==10.
