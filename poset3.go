@@ -104,6 +104,12 @@ type posetNode struct {
 // DAG node; when a new equality relation is recorded between two existing nodes,
 // the nodes are merged, adjusting incoming and outgoing edges.
 //
+// Constants are specially treated. When a constant is added to the poset, it is
+// immediately linked to other constants already present; so for instance if the
+// poset knows that x<=3, and then x is tested against 5, 5 is first added and linked
+// 3 (using 3<5), so that the poset knows that x<=3<5; at that point, it is able
+// to answer x<5 correctly.
+//
 // poset is designed to be memory efficient and do little allocations during normal usage.
 // Most internal data structures are pre-allocated and flat, so for instance adding a
 // new relation does not cause any allocation. For performance reasons,
