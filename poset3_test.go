@@ -569,3 +569,60 @@ func TestPosetConst(t *testing.T) {
 		{Undo, 0, 0},
 	})
 }
+
+func TestPosetNonEqual(t *testing.T) {
+	testPosetOps(t, false, []posetTestOp{
+		{Checkpoint, 0, 0},
+		{Equal_Fail, 10, 20},
+		{NonEqual_Fail, 10, 20},
+
+		// Learn 10!=20
+		{Checkpoint, 0, 0},
+		{SetNonEqual, 10, 20},
+		{Equal_Fail, 10, 20},
+		{NonEqual, 10, 20},
+		{SetEqual_Fail, 10, 20},
+
+		// Learn again 10!=20
+		{Checkpoint, 0, 0},
+		{SetNonEqual, 10, 20},
+		{Equal_Fail, 10, 20},
+		{NonEqual, 10, 20},
+
+		// Undo. We still know 10!=20
+		{Undo, 0, 0},
+		{Equal_Fail, 10, 20},
+		{NonEqual, 10, 20},
+		{SetEqual_Fail, 10, 20},
+
+		// Undo again. Now we know nothing
+		{Undo, 0, 0},
+		{Equal_Fail, 10, 20},
+		{NonEqual_Fail, 10, 20},
+
+		// Learn 10==20
+		{Checkpoint, 0, 0},
+		{SetEqual, 10, 20},
+		{Equal, 10, 20},
+		{NonEqual_Fail, 10, 20},
+		{SetNonEqual_Fail, 10, 20},
+
+		// Learn again 10==20
+		{Checkpoint, 0, 0},
+		{SetEqual, 10, 20},
+		{Equal, 10, 20},
+		{NonEqual_Fail, 10, 20},
+		{SetNonEqual_Fail, 10, 20},
+
+		// Undo. We stil know 10==20
+		{Undo, 0, 0},
+		{Equal, 10, 20},
+		{NonEqual_Fail, 10, 20},
+		{SetNonEqual_Fail, 10, 20},
+
+		// Undo. We know nothing
+		{Undo, 0, 0},
+		{Equal_Fail, 10, 20},
+		{NonEqual_Fail, 10, 20},
+	})
+}

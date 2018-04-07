@@ -564,6 +564,9 @@ func (po *poset) setnoneq(id1, id2 ID) {
 		// a small bitset and lazily grow it when higher IDs arrive.
 		bs = newBitset(int(id1))
 		po.noneq[id1] = bs
+	} else if bs.Test(uint32(id2)) {
+		// Already recorded
+		return
 	}
 	bs.Set(uint32(id2))
 	po.upushneq(id1, id2)
@@ -1005,6 +1008,11 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 	if n1.ID == n2.ID {
 		panic("should not call Equal with n1==n2")
+	}
+
+	// See if we already know this
+	if po.isnoneq(n1.ID, n2.ID) {
+		return true
 	}
 
 	// Check if we're contradicting an existing relation
