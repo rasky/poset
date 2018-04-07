@@ -1,3 +1,7 @@
+// Copyright 2018 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package ssa
 
 import (
@@ -126,7 +130,9 @@ func testPosetOps(t *testing.T, unsigned bool, ops []posetTestOp) {
 			panic("unimplemented")
 		}
 
-		po.DotDump(fmt.Sprintf("op%d.dot", idx), fmt.Sprintf("Last op: %v", op))
+		if false {
+			po.DotDump(fmt.Sprintf("op%d.dot", idx), fmt.Sprintf("Last op: %v", op))
+		}
 
 		if err := po.CheckIntegrity(); err != nil {
 			t.Fatalf("op%d%v: integrity error: %v", idx, op, err)
@@ -354,7 +360,7 @@ func TestPoset(t *testing.T) {
 	})
 }
 
-func TestStrict(t *testing.T) {
+func TestPosetStrict(t *testing.T) {
 
 	testPosetOps(t, false, []posetTestOp{
 		{Checkpoint, 0, 0},
@@ -496,7 +502,7 @@ func TestSetEqual(t *testing.T) {
 	})
 }
 
-func TestConst(t *testing.T) {
+func TestPosetConst(t *testing.T) {
 	testPosetOps(t, false, []posetTestOp{
 		{Checkpoint, 0, 0},
 		{SetOrder, 1, vconst(15)},
