@@ -147,11 +147,11 @@ func newPoset(unsigned bool) *poset {
 	return &poset{
 		flags:     flags,
 		values:    make(map[ID]uint32),
-		constants: make([]*Value, 0, 64),
-		nodes:     make([]posetNode, 1, 1024),
-		roots:     make([]uint32, 0, 64),
+		constants: make([]*Value, 0, 8),
+		nodes:     make([]posetNode, 1, 16),
+		roots:     make([]uint32, 0, 4),
 		noneq:     make(map[ID]bitset),
-		undo:      make([]posetUndo, 0, 256),
+		undo:      make([]posetUndo, 0, 4),
 	}
 }
 
