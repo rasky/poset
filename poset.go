@@ -37,14 +37,29 @@ func (bs bitset) Test(idx uint32) bool {
 	return bs[idx/uintSize]&(1<<(idx%uintSize)) != 0
 }
 
+type undoType uint8
+
+const (
+	undoInvalid    undoType = iota
+	undoCheckpoint          // a checkpoint to group undo passes
+	undoSetChl              // change back left child of undo.idx to undo.edge
+	undoSetChr              // change back right child of undo.idx to undo.edge
+	undoNonEqual            // forget that SSA value undo.ID is non-equal to undo.idx (another ID)
+	undoNewNode             // remove new node created for SSA value undo.ID
+	undoAliasNode           // unalias SSA value undo.ID so that it's back to its own node with index undo.idx
+	undoNewRoot             // remove node undo.idx from root list
+	undoChangeRoot          // remove node undo.idx from root list, and put back undo.edge.Target instead
+	undoMergeRoot           // remove node undo.idx from root list, and put back its children instead
+)
+
 // posetUndo represents an undo pass to be performed.
 // It's an union of fields that can be used to store information,
 // and typ is the discriminant, that specifies which kind
 // of operation must be performed. Not all fields are always used.
 type posetUndo struct {
-	typ  string
-	ID   ID
+	typ  undoType
 	idx  uint32
+	ID   ID
 	edge posetEdge
 	refs []uint32
 	ids  []ID
@@ -166,23 +181,23 @@ func (po *poset) children(i uint32) (posetEdge, posetEdge) {
 
 // upush records a new undo step. It can be used for simple
 // undo passes that record up to one index and one edge.
-func (po *poset) upush(s string, p uint32, e posetEdge) {
-	po.undo = append(po.undo, posetUndo{typ: s, idx: p, edge: e})
+func (po *poset) upush(typ undoType, p uint32, e posetEdge) {
+	po.undo = append(po.undo, posetUndo{typ: typ, idx: p, edge: e})
 }
 
 // upushnew pushes an undo pass for a new node
 func (po *poset) upushnew(id ID, idx uint32) {
-	po.undo = append(po.undo, posetUndo{typ: "newnode", ID: id, idx: idx})
+	po.undo = append(po.undo, posetUndo{typ: undoNewNode, ID: id, idx: idx})
 }
 
 // upushneq pushes a new undo pass for a nonequal relation
 func (po *poset) upushneq(id1 ID, id2 ID) {
-	po.undo = append(po.undo, posetUndo{typ: "nonequal", ID: id1, idx: uint32(id2)})
+	po.undo = append(po.undo, posetUndo{typ: undoNonEqual, ID: id1, idx: uint32(id2)})
 }
 
 // upushalias pushes a new undo pass for aliasing two nodes
 func (po *poset) upushalias(id ID, i2 uint32, refs []uint32, ids []ID) {
-	po.undo = append(po.undo, posetUndo{typ: "aliasnode", ID: id, idx: i2, refs: refs, ids: ids})
+	po.undo = append(po.undo, posetUndo{typ: undoAliasNode, ID: id, idx: i2, refs: refs, ids: ids})
 }
 
 // addchild adds i2 as direct child of i1.
@@ -192,10 +207,10 @@ func (po *poset) addchild(i1, i2 uint32, strict bool) {
 
 	if i1l == 0 {
 		po.setchl(i1, e2)
-		po.upush("setchl", i1, 0)
+		po.upush(undoSetChl, i1, 0)
 	} else if i1r == 0 {
 		po.setchr(i1, e2)
-		po.upush("setchr", i1, 0)
+		po.upush(undoSetChr, i1, 0)
 	} else {
 		// If n1 already has two children, add an intermediate dummy
 		// node to record the relation correctly (without relating
@@ -214,12 +229,12 @@ func (po *poset) addchild(i1, i2 uint32, strict bool) {
 			po.setchl(dummy, i1r)
 			po.setchr(dummy, e2)
 			po.setchr(i1, newedge(dummy, false))
-			po.upush("setchr", i1, i1r)
+			po.upush(undoSetChr, i1, i1r)
 		} else {
 			po.setchl(dummy, i1l)
 			po.setchr(dummy, e2)
 			po.setchl(i1, newedge(dummy, false))
-			po.upush("setchl", i1, i1l)
+			po.upush(undoSetChl, i1, i1l)
 		}
 	}
 }
@@ -266,7 +281,7 @@ func (po *poset) newconst(n *Value) {
 	if len(po.constants) == 0 {
 		i := po.newnode(n)
 		po.roots = append(po.roots, i)
-		po.upush("newroot", i, 0)
+		po.upush(undoNewRoot, i, 0)
 		po.constants = append(po.constants, n)
 		return
 	}
@@ -327,7 +342,7 @@ func (po *poset) newconst(n *Value) {
 		r2 := po.findroot(i2)
 		dummy := po.newnode(nil)
 		po.changeroot(r2, dummy)
-		po.upush("changeroot", dummy, newedge(r2, false))
+		po.upush(undoChangeRoot, dummy, newedge(r2, false))
 		po.addchild(dummy, r2, false)
 		po.addchild(dummy, i, false)
 		po.addchild(i, i2, true)
@@ -515,7 +530,7 @@ func (po *poset) mergeroot(r1, r2 uint32) uint32 {
 	po.setchr(r, newedge(r2, false))
 	po.changeroot(r1, r)
 	po.removeroot(r2)
-	po.upush("mergeroot", r, 0)
+	po.upush(undoMergeRoot, r, 0)
 	return r
 }
 
@@ -812,7 +827,7 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 		// Create a new DAG to record the relation.
 		i1, i2 = po.newnode(n1), po.newnode(n2)
 		po.roots = append(po.roots, i1)
-		po.upush("newroot", i1, 0)
+		po.upush(undoNewRoot, i1, 0)
 		po.addchild(i1, i2, strict)
 
 	case f1 && !f2:
@@ -829,7 +844,7 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 
 		if po.isroot(i2) {
 			po.changeroot(i2, i1)
-			po.upush("changeroot", i1, newedge(i2, strict))
+			po.upush(undoChangeRoot, i1, newedge(i2, strict))
 			po.addchild(i1, i2, strict)
 			return true
 		}
@@ -848,7 +863,7 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 		//
 		dummy := po.newnode(nil)
 		po.changeroot(r, dummy)
-		po.upush("changeroot", dummy, newedge(r, false))
+		po.upush(undoChangeRoot, dummy, newedge(r, false))
 		po.addchild(dummy, r, false)
 		po.addchild(dummy, i1, false)
 		po.addchild(i1, i2, strict)
@@ -963,7 +978,7 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 	case !f1 && !f2:
 		i1 = po.newnode(n1)
 		po.roots = append(po.roots, i1)
-		po.upush("newroot", i1, 0)
+		po.upush(undoNewRoot, i1, 0)
 		po.aliasnode(n1, n2)
 	case f1 && !f2:
 		po.aliasnode(n1, n2)
@@ -1043,7 +1058,7 @@ func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 // to later undo this state.
 // Complexity is O(1).
 func (po *poset) Checkpoint() {
-	po.undo = append(po.undo, posetUndo{typ: "checkpoint"})
+	po.undo = append(po.undo, posetUndo{typ: undoCheckpoint})
 }
 
 // Undo restores the state of the poset to the previous checkpoint.
@@ -1060,19 +1075,19 @@ func (po *poset) Undo() {
 		po.undo = po.undo[:len(po.undo)-1]
 
 		switch pass.typ {
-		case "checkpoint":
+		case undoCheckpoint:
 			return
 
-		case "setchl":
+		case undoSetChl:
 			po.setchl(pass.idx, pass.edge)
 
-		case "setchr":
+		case undoSetChr:
 			po.setchr(pass.idx, pass.edge)
 
-		case "nonequal":
+		case undoNonEqual:
 			po.noneq[pass.ID].Clear(pass.idx)
 
-		case "newnode":
+		case undoNewNode:
 			if pass.ID != 0 {
 				if po.values[pass.ID] != pass.idx {
 					panic("invalid newnode undo pass")
@@ -1088,7 +1103,7 @@ func (po *poset) Undo() {
 				po.constants = po.constants[:nc-1]
 			}
 
-		case "aliasnode":
+		case undoAliasNode:
 			ID, prev := pass.ID, pass.idx
 			cur := po.values[ID]
 			if prev == 0 {
@@ -1127,7 +1142,7 @@ func (po *poset) Undo() {
 				}
 			}
 
-		case "newroot":
+		case undoNewRoot:
 			i := pass.idx
 			l, r := po.children(i)
 			if l|r != 0 {
@@ -1135,7 +1150,7 @@ func (po *poset) Undo() {
 			}
 			po.removeroot(i)
 
-		case "changeroot":
+		case undoChangeRoot:
 			i := pass.idx
 			l, r := po.children(i)
 			if l|r != 0 {
@@ -1143,7 +1158,7 @@ func (po *poset) Undo() {
 			}
 			po.changeroot(i, pass.edge.Target())
 
-		case "mergeroot":
+		case undoMergeRoot:
 			i := pass.idx
 			l, r := po.children(i)
 			po.changeroot(i, l.Target())
