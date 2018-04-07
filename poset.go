@@ -94,8 +94,8 @@ type posetNode struct {
 // true for D<C.
 //
 // poset will refuse to record new relations that contradict existing relations:
-// for instance if A<B<C, calling SetOrder for C<A will fail; also calling SetEqual
-// for C==A will fail.
+// for instance if A<B<C, calling SetOrder for C<A will fail returning false; also
+// calling SetEqual for C==A will fail.
 //
 // It is also possible to record inequality relations between nodes with SetNonEqual;
 // given that non-equality is not transitive, the only effect is that a later call
