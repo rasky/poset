@@ -1047,7 +1047,7 @@ func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 }
 
 // Checkpoint saves the current state of the DAG so that it's possible
-// to later undo this state.
+// to later undo to this state.
 // Complexity is O(1).
 func (po *poset) Checkpoint() {
 	po.undo = append(po.undo, posetUndo{typ: undoCheckpoint})
