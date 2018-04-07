@@ -46,7 +46,7 @@ const (
 	undoSetChr              // change back right child of undo.idx to undo.edge
 	undoNonEqual            // forget that SSA value undo.ID is non-equal to undo.idx (another ID)
 	undoNewNode             // remove new node created for SSA value undo.ID
-	undoAliasNode           // unalias SSA value undo.ID so that it's back to its own node with index undo.idx
+	undoAliasNode           // unalias SSA value undo.ID so that it points back to node index undo.idx
 	undoNewRoot             // remove node undo.idx from root list
 	undoChangeRoot          // remove node undo.idx from root list, and put back undo.edge.Target instead
 	undoMergeRoot           // remove node undo.idx from root list, and put back its children instead
@@ -61,8 +61,6 @@ type posetUndo struct {
 	idx  uint32
 	ID   ID
 	edge posetEdge
-	refs []uint32
-	ids  []ID
 }
 
 const (
@@ -196,8 +194,8 @@ func (po *poset) upushneq(id1 ID, id2 ID) {
 }
 
 // upushalias pushes a new undo pass for aliasing two nodes
-func (po *poset) upushalias(id ID, i2 uint32, refs []uint32, ids []ID) {
-	po.undo = append(po.undo, posetUndo{typ: undoAliasNode, ID: id, idx: i2, refs: refs, ids: ids})
+func (po *poset) upushalias(id ID, i2 uint32) {
+	po.undo = append(po.undo, posetUndo{typ: undoAliasNode, ID: id, idx: i2})
 }
 
 // addchild adds i2 as direct child of i1.
@@ -358,43 +356,37 @@ func (po *poset) aliasnode(n1, n2 *Value) {
 		panic("aliasnode for non-existing node")
 	}
 
-	var refs []uint32
-	var ids []ID
-
 	i2 := po.values[n2.ID]
 	if i2 != 0 {
 		// Rename all references to i2 into i1
 		// (do not touch i1 itself, otherwise we can create useless self-loops)
 		for idx, n := range po.nodes {
 			if uint32(idx) != i1 {
-				if n.l.Target() == i2 {
-					po.setchl(uint32(idx), newedge(i1, n.l.Strict()))
-					refs = append(refs, uint32(idx*2))
+				l, r := n.l, n.r
+				if l.Target() == i2 {
+					po.setchl(uint32(idx), newedge(i1, l.Strict()))
+					po.upush(undoSetChl, uint32(idx), l)
 				}
-				if n.r.Target() == i2 {
-					po.setchr(uint32(idx), newedge(i1, n.r.Strict()))
-					refs = append(refs, uint32(idx*2+1))
+				if r.Target() == i2 {
+					po.setchr(uint32(idx), newedge(i1, r.Strict()))
+					po.upush(undoSetChr, uint32(idx), r)
 				}
 			}
 		}
 
-		po.values[n2.ID] = i1
-
-		// See if there are other IDs to reassign
-		// Keep the above assignment separate so that in the normal case
-		// we don't allocate memory for ids.
+		// Reassign all existing IDs that point to i2 to i1.
+		// This includes n2.ID.
 		for k, v := range po.values {
 			if v == i2 {
 				po.values[k] = i1
-				ids = append(ids, k)
+				po.upushalias(k, i2)
 			}
 		}
-
 	} else {
+		// n2.ID wasn't seen before, so record it as alias to i1
 		po.values[n2.ID] = i1
+		po.upushalias(n2.ID, 0)
 	}
-
-	po.upushalias(n2.ID, i2, refs, ids)
 }
 
 func (po *poset) isroot(r uint32) bool {
@@ -1115,31 +1107,6 @@ func (po *poset) Undo() {
 				}
 				// Give it back previous value
 				po.values[ID] = prev
-
-				// Restore other IDs previous value
-				for _, id := range pass.ids {
-					if po.values[id] != cur {
-						panic("invalid aliasnode id in undo pass")
-					}
-					po.values[id] = prev
-				}
-
-				// Restore references to the previous value
-				for _, root := range pass.refs {
-					idx := root / 2
-					l, r := &po.nodes[idx].l, &po.nodes[idx].r
-					if root&1 == 0 {
-						if l.Target() != cur {
-							panic("invalid aliasnode ref in undo pass")
-						}
-						*l = newedge(prev, l.Strict())
-					} else {
-						if r.Target() != cur {
-							panic("invalid aliasnode ref in undo pass")
-						}
-						*r = newedge(prev, r.Strict())
-					}
-				}
 			}
 
 		case undoNewRoot:
