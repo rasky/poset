@@ -1053,10 +1053,11 @@ func (po *poset) Checkpoint() {
 	po.undo = append(po.undo, posetUndo{typ: undoCheckpoint})
 }
 
-// Undo restores the state of the poset to the previous checkpoint.
-// Complexity depends on the type of operations that were performed
-// since the last checkpoint; each Set* operation creates an undo
-// pass which Undo has to revert with a worst-case complexity of O(n).
+// Undo restores the state of the poset to the previous checkpoint,
+// reverting the effect of all Set* operations that were performed
+// after the checkpoint was created.
+// Almost all Set* operations can be reverted with O(1) complexity,
+// with the exception of SetEqual that has a worst-case O(n) reversion.
 func (po *poset) Undo() {
 	if len(po.undo) == 0 {
 		panic("empty undo stack")
