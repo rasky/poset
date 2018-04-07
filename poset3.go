@@ -430,13 +430,14 @@ func (po *poset) dfs(r uint32, strict bool, f func(i uint32) bool) bool {
 		// edges. This will be the bootstrap open list for the real DFS.
 		next := make([]uint32, 0, 64)
 
-		if f(r) {
-			return true
-		}
 		for len(open) > 0 {
 			i := open[len(open)-1]
 			open = open[:len(open)-1]
 
+			// Don't visit the same node twice. Notice that all nodes
+			// across non-strict paths are still visited at least once, so
+			// a non-strict path can never obscure a strict path to the
+			// same node.
 			if !closed.Test(i) {
 				closed.Set(i)
 
