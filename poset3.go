@@ -581,7 +581,6 @@ func (po *poset) CheckIntegrity() (err error) {
 		}
 
 		po.dfs(r, false, func(i uint32) bool {
-			fmt.Println(r, i)
 			if seen.Test(i) {
 				err = errors.New("duplicate node")
 				return true
