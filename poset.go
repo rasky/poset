@@ -1002,7 +1002,7 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 	return true
 }
 
-// SetEqual records that n1==n2. Returns false if this is a contradiction
+// SetNonEqual records that n1!=n2. Returns false if this is a contradiction
 // (that is, if it is already recorded that n1==n2).
 // Complexity is O(n).
 func (po *poset) SetNonEqual(n1, n2 *Value) bool {
