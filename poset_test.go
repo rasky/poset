@@ -42,14 +42,25 @@ func vconst(i int) int {
 	return 1000 + 128 + i
 }
 
+func vconst2(i int) int {
+	if i < -128 || i >= 128 {
+		panic("invalid const")
+	}
+	return 1000 + 256 + i
+}
+
 func testPosetOps(t *testing.T, unsigned bool, ops []posetTestOp) {
-	var v [1256]*Value
+	var v [1512]*Value
 	for i := range v {
 		v[i] = new(Value)
 		v[i].ID = ID(i)
-		if i >= 1000 {
+		if i >= 1000 && i < 1256 {
 			v[i].Op = OpConst64
 			v[i].AuxInt = int64(i - 1000 - 128)
+		}
+		if i >= 1256 && i < 1512 {
+			v[i].Op = OpConst64
+			v[i].AuxInt = int64(i - 1000 - 256)
 		}
 	}
 
@@ -568,6 +579,49 @@ func TestPosetConst(t *testing.T) {
 		{Ordered_Fail, 1, vconst(0)},
 		{Undo, 0, 0},
 	})
+
+	testPosetOps(t, false, []posetTestOp{
+		// Check relations of a constant with itself
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, vconst(3), vconst2(3)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetEqual, vconst(3), vconst2(3)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetNonEqual_Fail, vconst(3), vconst2(3)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetOrder_Fail, vconst(3), vconst2(3)},
+		{Undo, 0, 0},
+
+		// Check relations of two constants among them, using
+		// different instances of the same constant
+		{Checkpoint, 0, 0},
+		{SetOrderOrEqual, vconst(3), vconst(4)},
+		{OrderedOrEqual, vconst(3), vconst2(4)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetOrder, vconst(3), vconst(4)},
+		{Ordered, vconst(3), vconst2(4)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetEqual_Fail, vconst(3), vconst(4)},
+		{SetEqual_Fail, vconst(3), vconst2(4)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{NonEqual, vconst(3), vconst(4)},
+		{NonEqual, vconst(3), vconst2(4)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{Equal_Fail, vconst(3), vconst(4)},
+		{Equal_Fail, vconst(3), vconst2(4)},
+		{Undo, 0, 0},
+		{Checkpoint, 0, 0},
+		{SetNonEqual, vconst(3), vconst(4)},
+		{SetNonEqual, vconst(3), vconst2(4)},
+		{Undo, 0, 0},
+	})
 }
 
 func TestPosetNonEqual(t *testing.T) {
@@ -614,7 +668,7 @@ func TestPosetNonEqual(t *testing.T) {
 		{NonEqual_Fail, 10, 20},
 		{SetNonEqual_Fail, 10, 20},
 
-		// Undo. We stil know 10==20
+		// Undo. We still know 10==20
 		{Undo, 0, 0},
 		{Equal, 10, 20},
 		{NonEqual_Fail, 10, 20},

@@ -1000,11 +1000,6 @@ func (po *poset) SetEqual(n1, n2 *Value) bool {
 		panic("should not call Add with n1==n2")
 	}
 
-	// SetEqual between different constants is always false
-	if n1.isGenericIntConst() && n2.isGenericIntConst() && n1.AuxInt != n2.AuxInt {
-		return false
-	}
-
 	// If we recorded that n1!=n2, this is a contradiction.
 	if po.isnoneq(n1.ID, n2.ID) {
 		return false
