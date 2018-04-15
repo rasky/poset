@@ -274,8 +274,9 @@ func (po *poset) newconst(n *Value) {
 		panic("newconst on non-constant")
 	}
 
-	// If this is the first constant, put it into a new root
-	// and leave it alone.
+	// If this is the first constant, put it into a new root, as
+	// we can't record an existing connection so we don't have
+	// a specific DAG to add it to.
 	if len(po.constants) == 0 {
 		i := po.newnode(n)
 		po.roots = append(po.roots, i)
@@ -284,6 +285,11 @@ func (po *poset) newconst(n *Value) {
 		return
 	}
 
+	// Find the lower and upper bound among existing constants. That is,
+	// find the higher constant that is lower than the one that we're adding,
+	// and the lower constant that is higher.
+	// The loop is duplicated to handle signed and unsigned comparison,
+	// depending on how the poset was configured.
 	var lowerptr, higherptr *Value
 
 	if po.flags&posetFlagUnsigned != 0 {
@@ -323,19 +329,39 @@ func (po *poset) newconst(n *Value) {
 	}
 
 	if lowerptr == nil && higherptr == nil {
+		// This should not happen, as at least one
+		// other constant must exist if we get here.
 		panic("no constant found")
 	}
 
+	// Create the new node and connect it to the bounds, so that
+	// lower < n < higher. We could have found both bounds or only one
+	// of them, depending on what other constants are present in the poset.
+	// Notice that we always link constants together, so they
+	// are always part of the same DAG.
 	i := po.newnode(n)
 	switch {
 	case lowerptr != nil && higherptr != nil:
+		// Both bounds are present, record lower < n < higher.
 		po.addchild(po.values[lowerptr.ID], i, true)
 		po.addchild(i, po.values[higherptr.ID], true)
 
 	case lowerptr != nil:
+		// Lower bound only, record lower < n.
 		po.addchild(po.values[lowerptr.ID], i, true)
 
 	case higherptr != nil:
+		// Higher bound only. To record n < higher, we need
+		// a dummy root:
+		//
+		//        dummy
+		//        /   \
+		//      root   \
+		//       /      n
+		//     ....    /
+		//       \    /
+		//       higher
+		//
 		i2 := po.values[higherptr.ID]
 		r2 := po.findroot(i2)
 		dummy := po.newnode(nil)
@@ -527,7 +553,7 @@ func (po *poset) mergeroot(r1, r2 uint32) uint32 {
 }
 
 // collapsepath marks i1 and i2 as equal and collapses as equal all
-// nodes across all paths between i2 and i2. If a strict edge is
+// nodes across all paths between i1 and i2. If a strict edge is
 // found, the function does not modify the DAG and returns false.
 func (po *poset) collapsepath(n1, n2 *Value) bool {
 	i1, i2 := po.values[n1.ID], po.values[n2.ID]
@@ -582,7 +608,20 @@ func (po *poset) setnoneq(id1, id2 ID) {
 // CheckIntegrity verifies internal integrity of a poset. It is intended
 // for debugging purposes.
 func (po *poset) CheckIntegrity() (err error) {
-	// Verify that each node appears in a single DAG
+	// Record which index is a constant
+	constants := newBitset(int(po.lastidx + 1))
+	for _, c := range po.constants {
+		if idx, ok := po.values[c.ID]; !ok {
+			err = errors.New("node missing for constant")
+			return err
+		} else {
+			constants.Set(idx)
+		}
+	}
+
+	// Verify that each node appears in a single DAG, and that
+	// all constants are within the same DAG
+	var croot uint32
 	seen := newBitset(int(po.lastidx + 1))
 	for _, r := range po.roots {
 		if r == 0 {
@@ -596,6 +635,14 @@ func (po *poset) CheckIntegrity() (err error) {
 				return true
 			}
 			seen.Set(i)
+			if constants.Test(i) {
+				if croot == 0 {
+					croot = r
+				} else if croot != r {
+					err = errors.New("constants are in different DAGs")
+					return true
+				}
+			}
 			return false
 		})
 		if err != nil {
@@ -1047,17 +1094,16 @@ func (po *poset) SetNonEqual(n1, n2 *Value) bool {
 }
 
 // Checkpoint saves the current state of the DAG so that it's possible
-// to later undo to this state.
+// to later undo this state.
 // Complexity is O(1).
 func (po *poset) Checkpoint() {
 	po.undo = append(po.undo, posetUndo{typ: undoCheckpoint})
 }
 
-// Undo restores the state of the poset to the previous checkpoint,
-// reverting the effect of all Set* operations that were performed
-// after the checkpoint was created.
-// Almost all Set* operations can be reverted with O(1) complexity,
-// with the exception of SetEqual that has a worst-case O(n) reversion.
+// Undo restores the state of the poset to the previous checkpoint.
+// Complexity depends on the type of operations that were performed
+// since the last checkpoint; each Set* operation creates an undo
+// pass which Undo has to revert with a worst-case complexity of O(n).
 func (po *poset) Undo() {
 	if len(po.undo) == 0 {
 		panic("empty undo stack")
