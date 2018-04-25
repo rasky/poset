@@ -215,7 +215,7 @@ func (po *poset) addchild(i1, i2 uint32, strict bool) {
 		// n2 to other existing nodes). Use a non-deterministic value
 		// to decide whether to append on the left or the right, to avoid
 		// creating degenerated chains.
-		//f
+		//
 		//      n1
 		//     /  \
 		//   i1l  dummy
@@ -450,7 +450,7 @@ func (po *poset) removeroot(r uint32) {
 // visited too.
 // If strict, ignore edges across a path until at least one
 // strict edge is found. For instance, for a chain A<=B<=C<D<=E<F,
-// a strict walk visits A,D,E,F.
+// a strict walk visits D,E,F.
 // If the visit ends, false is returned.
 func (po *poset) dfs(r uint32, strict bool, f func(i uint32) bool) bool {
 	closed := newBitset(int(po.lastidx + 1))
@@ -921,12 +921,12 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 		if po.dominates(i1, i2, false) {
 			// This is the table of all cases we need to handle:
 			//
-			//      DAG         New    Action
+			//      DAG          New      Action
 			//      ---------------------------------------------------
-			// #1:  A<=B<=C  |  A<=C | do nothing
-			// #2:  A<=B<=C  |  A<C  | add strict edge (A<C)
-			// #3:  A<B<C    |  A<=C | do nothing (we already know more)
-			// #4:  A<B<C    |  A<C  | do nothing
+			// #1:  N1<=X<=N2 |  N1<=N2 | do nothing
+			// #2:  N1<=X<=N2 |  N1<N2  | add strict edge (N1<N2)
+			// #3:  N1<X<N2   |  N1<=N2 | do nothing (we already know more)
+			// #4:  N1<X<N2   |  N1<N2  | do nothing
 
 			// Check if we're in case #2
 			if strict && !po.dominates(i1, i2, true) {
@@ -942,19 +942,20 @@ func (po *poset) setOrder(n1, n2 *Value, strict bool) bool {
 		if po.dominates(i2, i1, false) {
 			// This is the table of all cases we need to handle:
 			//
-			//      DAG         New    Action
+			//      DAG           New      Action
 			//      ---------------------------------------------------
-			// #5:  C<=B<=A  |  A<=C | collapse path (learn that A=B=C)
-			// #6:  C<=B<=A  |  A<C  | contradiction
-			// #7:  C<B<A    |  A<=C | contradiction in the path
-			// #8:  C<B<A    |  A<C  | contradiction
+			// #5:  N2<=X<=N1  |  N1<=N2 | collapse path (learn that N1=X=N2)
+			// #6:  N2<=X<=N1  |  N1<N2  | contradiction
+			// #7:  N2<X<N1    |  N1<=N2 | contradiction in the path
+			// #8:  N2<X<N1    |  N1<N2  | contradiction
 
 			if strict {
 				// Cases #6 and #8: contradiction
 				return false
 			}
 
-			// We're in case #5 or #7.
+			// We're in case #5 or #7. Try to collapse path, and that will
+			// fail if it realizes that we are in case #7.
 			return po.collapsepath(n2, n1)
 		}
 
